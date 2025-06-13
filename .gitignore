@@ -1,0 +1,20 @@
+# Ignore Visual Studio cache folders
+.vs/
+
+# Ignore build output
+out/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.sln
+*.vcxproj*
+*.user
+*.obj
+*.pdb
+
+# Backup or temp files
+*.log
+*.tmp

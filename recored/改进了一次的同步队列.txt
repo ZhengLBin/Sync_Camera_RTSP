@@ -1,0 +1,424 @@
+#include "sync_camera.h"
+#include <iostream>
+#include <stdexcept>
+
+DualCameraCapture::DualCameraCapture() {
+    avdevice_register_all(); // 注册所有输入输出设备
+}
+
+DualCameraCapture::~DualCameraCapture() {
+    stop();
+
+    // 确保所有线程已停止
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    for (auto& cam : cameras_) {
+        // 1. 释放 SwsContext
+        if (cam.sws_ctx_yuv) {
+            sws_freeContext(cam.sws_ctx_yuv);
+            cam.sws_ctx_yuv = nullptr;
+        }
+
+        // 2. 释放帧缓存 - 注意正确释放clone_frame分配的内存
+        if (cam.yuv_frame) {
+            av_frame_free(&cam.yuv_frame);
+            cam.yuv_frame = nullptr;
+        }
+        if (cam.frame) {
+            av_frame_free(&cam.frame);
+            cam.frame = nullptr;
+        }
+
+        // 3. 释放缓冲区
+        if (cam.yuv_buffer) {
+            av_freep(&cam.yuv_buffer);
+        }
+
+        // 4. 释放解码器和格式上下文
+        if (cam.codec_ctx) {
+            avcodec_free_context(&cam.codec_ctx);
+            cam.codec_ctx = nullptr;
+        }
+        if (cam.fmt_ctx) {
+            avformat_close_input(&cam.fmt_ctx);
+            // avformat_close_input 会 free fmt_ctx 本身
+            cam.fmt_ctx = nullptr;
+        }
+    }
+
+    // 5. 清理原始队列里残留的帧 - 使用正确的释放方法
+    for (int i = 0; i < 2; ++i) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        while (!frame_queue_yuv[i].empty()) {
+            free_cloned_frame(&frame_queue_yuv[i].front().frame);
+            frame_queue_yuv[i].pop_front();
+        }
+    }
+
+    // 6. 清理同步队列里的帧对 - 使用正确的释放方法
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        while (!synced_yuv_queue_.empty()) {
+            auto& p = synced_yuv_queue_.front();
+            free_cloned_frame(&p.first);
+            free_cloned_frame(&p.second);
+            synced_yuv_queue_.pop_front();
+        }
+    }
+}
+
+// 新增：正确释放clone_frame分配的内存
+void DualCameraCapture::free_cloned_frame(AVFrame** frame) {
+    if (frame && *frame) {
+        // 如果data[0]不为空，说明是通过av_image_alloc分配的，需要先释放data缓冲区
+        if ((*frame)->data[0]) {
+            av_freep(&(*frame)->data[0]);
+        }
+        av_frame_free(frame);
+    }
+}
+
+bool DualCameraCapture::init(const std::vector<std::string>& device_paths) {
+    if (device_paths.size() != 2) {
+        std::cerr << "Need exactly 2 camera devices" << std::endl;
+        return false;
+    }
+
+    cameras_.resize(2);
+    for (int i = 0; i < 2; ++i) {
+        if (!init_camera(i, device_paths[i])) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool DualCameraCapture::init_camera(int index, const std::string& device_path) {
+    auto& cam = cameras_[index];
+
+    // 打开视频设备 - 保持原来的方式，只是稍微优化选项
+    const AVInputFormat* input_format = av_find_input_format("dshow"); // Windows使用dshow
+    AVDictionary* options = nullptr;
+
+    // 保持原来的基本选项，只是优化缓冲区大小
+    av_dict_set(&options, "video_size", "640x480", 0);
+    av_dict_set(&options, "framerate", "30", 0);
+    av_dict_set(&options, "rtbufsize", "50M", 0);  // 减少缓冲区大小
+    av_dict_set(&options, "probesize", "32", 0);   // 减少探测大小
+    av_dict_set(&options, "analyzeduration", "1000000", 0); // 1秒分析时间
+
+    int ret = avformat_open_input(&cam.fmt_ctx, device_path.c_str(), input_format, &options);
+    av_dict_free(&options); // 立即释放选项字典
+
+    if (ret != 0) {
+        char error_buf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, error_buf, sizeof(error_buf));
+        std::cerr << "Could not open camera " << index << " at " << device_path
+            << ": " << error_buf << std::endl;
+        return false;
+    }
+
+    if (avformat_find_stream_info(cam.fmt_ctx, nullptr) < 0) {
+        std::cerr << "Could not find stream info for camera " << index << std::endl;
+        return false;
+    }
+
+    // 查找视频流
+    cam.video_stream_idx = -1;
+    for (unsigned int i = 0; i < cam.fmt_ctx->nb_streams; i++) {
+        if (cam.fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+            cam.video_stream_idx = i;
+            break;
+        }
+    }
+
+    if (cam.video_stream_idx == -1) {
+        std::cerr << "Could not find video stream in camera " << index << std::endl;
+        return false;
+    }
+
+    // 获取解码器
+    AVCodecParameters* codecpar = cam.fmt_ctx->streams[cam.video_stream_idx]->codecpar;
+
+    // 在获取codecpar后添加
+    std::cout << "Camera " << index << " pixel format: "
+        << av_get_pix_fmt_name((AVPixelFormat)codecpar->format) << "\n";
+    std::cout << "Color range: " << codecpar->color_range << "\n";
+
+    const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
+    if (!codec) {
+        std::cerr << "Unsupported codec for camera " << index << std::endl;
+        return false;
+    }
+
+    cam.codec_ctx = avcodec_alloc_context3(codec);
+    if (!cam.codec_ctx) {
+        std::cerr << "Could not allocate codec context for camera " << index << std::endl;
+        return false;
+    }
+
+    if (avcodec_parameters_to_context(cam.codec_ctx, codecpar) < 0) {
+        std::cerr << "Could not copy codec context for camera " << index << std::endl;
+        return false;
+    }
+
+    // 设置低延迟选项
+    av_opt_set(cam.codec_ctx->priv_data, "preset", "ultrafast", 0);
+    av_opt_set(cam.codec_ctx->priv_data, "tune", "zerolatency", 0);
+
+    if (avcodec_open2(cam.codec_ctx, codec, nullptr) < 0) {
+        std::cerr << "Could not open codec for camera " << index << std::endl;
+        return false;
+    }
+
+    // 分配帧缓冲区
+    cam.frame = av_frame_alloc();
+    if (!cam.frame) {
+        std::cerr << "Could not allocate frame for camera " << index << std::endl;
+        return false;
+    }
+
+    // 分配 YUV420P 帧缓冲区
+    cam.yuv_frame = av_frame_alloc();
+    if (!cam.yuv_frame) {
+        std::cerr << "Could not allocate yuv frame for camera " << index << std::endl;
+        return false;
+    }
+
+    // 计算所需缓冲区大小
+    int yuv_size = av_image_get_buffer_size(
+        AV_PIX_FMT_YUV420P,
+        cam.codec_ctx->width,
+        cam.codec_ctx->height,
+        32  // 使用32字节对齐
+    );
+
+    // 分配 buffer
+    cam.yuv_buffer = (uint8_t*)av_malloc(yuv_size);
+    if (!cam.yuv_buffer) {
+        std::cerr << "Could not allocate yuv buffer for camera " << index << std::endl;
+        return false;
+    }
+
+    // 将 buffer 绑定到帧
+    av_image_fill_arrays(
+        cam.yuv_frame->data,
+        cam.yuv_frame->linesize,
+        cam.yuv_buffer,
+        AV_PIX_FMT_YUV420P,
+        cam.codec_ctx->width,
+        cam.codec_ctx->height,
+        32  // 使用32字节对齐
+    );
+
+    // 提前创建 SwsContext
+    cam.sws_ctx_yuv = sws_getContext(
+        cam.codec_ctx->width, cam.codec_ctx->height, cam.codec_ctx->pix_fmt,
+        cam.codec_ctx->width, cam.codec_ctx->height, AV_PIX_FMT_YUV420P,
+        SWS_BILINEAR, nullptr, nullptr, nullptr);
+
+    if (!cam.sws_ctx_yuv) {
+        std::cerr << "Could not create sws context for camera " << index << std::endl;
+        return false;
+    }
+
+    std::cout << "Camera " << index << " initialized successfully" << std::endl;
+    return true;
+}
+
+void DualCameraCapture::start() {
+    running_ = true;
+    for (int i = 0; i < 2; ++i) {
+        threads_.emplace_back(&DualCameraCapture::capture_thread, this, i);
+    }
+    sync_thread_ = std::thread(&DualCameraCapture::sync_loop, this);
+}
+
+void DualCameraCapture::stop() {
+    running_ = false;
+    for (auto& t : threads_) {
+        if (t.joinable()) t.join();
+    }
+    if (sync_thread_.joinable()) sync_thread_.join();
+    threads_.clear();
+}
+
+void DualCameraCapture::capture_thread(int index) {
+    auto& cam = cameras_[index];
+    AVPacket* packet = av_packet_alloc(); // 使用 av_packet_alloc
+    if (!packet) {
+        std::cerr << "Could not allocate packet for camera " << index << std::endl;
+        return;
+    }
+
+    int consecutive_failures = 0;
+    const int MAX_CONSECUTIVE_FAILURES = 10;
+
+    while (running_) {
+        int ret = av_read_frame(cam.fmt_ctx, packet);
+        if (ret < 0) {
+            consecutive_failures++;
+            if (consecutive_failures > MAX_CONSECUTIVE_FAILURES) {
+                std::cerr << "Too many consecutive failures for camera " << index << ", stopping thread" << std::endl;
+                break;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            continue;
+        }
+
+        consecutive_failures = 0; // 重置失败计数
+
+        if (packet->stream_index != cam.video_stream_idx) {
+            av_packet_unref(packet);
+            continue;
+        }
+
+        ret = avcodec_send_packet(cam.codec_ctx, packet);
+        av_packet_unref(packet); // 立即释放packet
+
+        if (ret < 0) {
+            continue;
+        }
+
+        ret = avcodec_receive_frame(cam.codec_ctx, cam.frame);
+        if (ret < 0) {
+            continue;
+        }
+
+        int64_t pts = av_gettime();
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            // 严格限制队列大小，防止内存泄漏 - 使用正确的释放方法
+            if (frame_queue_yuv[index].size() >= MAX_RAW_QUEUE_SIZE) {
+                // 释放最旧的帧 - 使用正确的方法
+                free_cloned_frame(&frame_queue_yuv[index].front().frame);
+                frame_queue_yuv[index].pop_front();
+            }
+
+            // YUV420P 转换
+            if (cam.sws_ctx_yuv) { // SwsContext 已在初始化时创建
+                sws_scale(cam.sws_ctx_yuv,
+                    (const uint8_t* const*)cam.frame->data, cam.frame->linesize,
+                    0, cam.frame->height,
+                    cam.yuv_frame->data, cam.yuv_frame->linesize);
+
+                cam.yuv_frame->width = cam.frame->width;
+                cam.yuv_frame->height = cam.frame->height;
+                cam.yuv_frame->format = AV_PIX_FMT_YUV420P;
+
+                AVFrame* cloned_yuv = clone_frame(cam.yuv_frame);
+                if (cloned_yuv) {
+                    frame_queue_yuv[index].emplace_back(TimestampedFrame{ cloned_yuv, pts });
+                }
+                else {
+                    std::cerr << "Failed to clone YUV frame for camera " << index << std::endl;
+                }
+            }
+        }
+
+        // 添加小延迟，避免过度占用CPU
+        std::this_thread::sleep_for(std::chrono::microseconds(100));
+    }
+
+    av_packet_free(&packet); // 释放packet
+    std::cout << "Capture thread " << index << " exited" << std::endl;
+}
+
+void DualCameraCapture::sync_loop() {
+    while (running_) {
+        TimestampedFrame y0, y1;
+        bool found_sync_pair = false;
+
+        {
+            std::lock_guard<std::mutex> lock(mutex_);
+
+            // 只要原始任一路空就等下一轮
+            if (frame_queue_yuv[0].empty() || frame_queue_yuv[1].empty()) {
+                // 继续等待
+            }
+            else {
+                // 拿最前面的
+                y0 = frame_queue_yuv[0].front();
+                y1 = frame_queue_yuv[1].front();
+
+                int64_t dy = std::abs(y0.timestamp_us - y1.timestamp_us);
+                if (dy <= SYNC_THRESHOLD_US) {
+                    // 找到同步帧对
+                    found_sync_pair = true;
+
+                    // 从原始队列移除（但不释放，因为我们要转移所有权）
+                    frame_queue_yuv[0].pop_front();
+                    frame_queue_yuv[1].pop_front();
+
+                    // 控制同步队列大小
+                    if (synced_yuv_queue_.size() >= MAX_SYNC_QUEUE_SIZE) {
+                        auto& old_pair = synced_yuv_queue_.front();
+                        free_cloned_frame(&old_pair.first);
+                        free_cloned_frame(&old_pair.second);
+                        synced_yuv_queue_.pop_front();
+                    }
+
+                    // 直接转移帧到同步队列，避免额外克隆
+                    synced_yuv_queue_.emplace_back(y0.frame, y1.frame);
+                }
+                else {
+                    // 丢弃时间戳较早的那一帧 - 使用正确的释放方法
+                    int idx = (y0.timestamp_us < y1.timestamp_us) ? 0 : 1;
+                    free_cloned_frame(&frame_queue_yuv[idx].front().frame);
+                    frame_queue_yuv[idx].pop_front();
+                }
+            }
+        }
+
+        // 根据是否找到同步帧调整睡眠时间
+        if (found_sync_pair) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        else {
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    }
+
+    std::cout << "Sync thread exited" << std::endl;
+}
+
+std::vector<AVFrame*> DualCameraCapture::get_sync_yuv420p_frames() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (synced_yuv_queue_.empty()) return {};
+
+    auto p = synced_yuv_queue_.front();
+    synced_yuv_queue_.pop_front();
+
+    return { p.first, p.second };
+}
+
+AVFrame* DualCameraCapture::clone_frame(const AVFrame* src) const {
+    if (!src) {
+        return nullptr;
+    }
+
+    AVFrame* dst = av_frame_alloc();
+    if (!dst) {
+        return nullptr;
+    }
+
+    dst->format = src->format;
+    dst->width = src->width;
+    dst->height = src->height;
+
+    int ret = av_image_alloc(dst->data, dst->linesize,
+        dst->width, dst->height,
+        (AVPixelFormat)dst->format, 32); // 使用32字节对齐
+    if (ret < 0) {
+        av_frame_free(&dst);
+        return nullptr;
+    }
+
+    av_image_copy(dst->data, dst->linesize,
+        (const uint8_t* const*)src->data, src->linesize,
+        (AVPixelFormat)dst->format,
+        dst->width, dst->height);
+    return dst;
+}
