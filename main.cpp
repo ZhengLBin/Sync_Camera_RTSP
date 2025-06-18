@@ -1,5 +1,5 @@
-// main.cpp - 修复内存泄漏和实现智能内存管理
-// #include <vld.h>
+// main.cpp 
+
 #include "sync_camera.h"
 #include "video_streamer.h"
 #include <iostream>
@@ -16,59 +16,31 @@
 // 全局退出标志
 std::atomic<bool> g_should_exit{ false };
 
-// 内存增长监控结构
+// 简化的内存监控结构
 struct MemoryMonitor {
     size_t baseline_mb = 0;
-    size_t last_mb = 0;
     size_t peak_mb = 0;
-    double growth_rate_mb_per_sec = 0.0;
-    std::chrono::steady_clock::time_point last_check_time;
-    int consecutive_high_growth = 0;
 
     void update(size_t current_mb) {
-        auto now = std::chrono::steady_clock::now();
-
-        if (last_mb > 0) {
-            auto elapsed_sec = std::chrono::duration<double>(now - last_check_time).count();
-            if (elapsed_sec > 0) {
-                growth_rate_mb_per_sec = static_cast<double>(current_mb - last_mb) / elapsed_sec;
-            }
-        }
-
         if (current_mb > peak_mb) {
             peak_mb = current_mb;
         }
-
-        // 检测连续高增长
-        if (growth_rate_mb_per_sec > 30.0) {  // 每秒增长超过10MB
-            consecutive_high_growth++;
-        }
-        else {
-            consecutive_high_growth = 0;
-        }
-
-        last_mb = current_mb;
-        last_check_time = now;
     }
 
-    bool is_critical() const {
-        return consecutive_high_growth >= 5 || growth_rate_mb_per_sec > 100.0;
-    }
-
-    bool is_warning() const {
-        return consecutive_high_growth >= 3 || growth_rate_mb_per_sec > 50.0;
+    bool is_critical(size_t current_mb) const {
+        return current_mb > 150;  // 从1000MB改为150MB
     }
 };
 
 // 信号处理函数
 void signal_handler(int signal) {
     if (signal == SIGINT || signal == SIGTERM) {
-        std::cout << "\nReceived signal " << signal << ", shutting down gracefully..." << std::endl;
+        std::cout << "\n[MAIN] Shutting down..." << std::endl;
         g_should_exit = true;
     }
 }
 
-// 获取当前进程内存使用量（MB）
+// 获取内存使用量(MB)
 size_t get_memory_usage_mb() {
 #ifdef _WIN32
     PROCESS_MEMORY_COUNTERS pmc;
@@ -87,152 +59,174 @@ int main() {
     // 设置FFmpeg日志级别
     av_log_set_level(AV_LOG_ERROR);
 
-    std::cout << "=== Advanced Memory Management System ===" << std::endl;
-    std::cout << "Features: Delayed initialization, frame balancing, smart memory cleanup" << std::endl;
+    std::cout << "=== Dual Camera RTSP Streamer (Improved) ===" << std::endl;
 
     // 初始化内存监控
     MemoryMonitor memory_monitor;
     memory_monitor.baseline_mb = get_memory_usage_mb();
-    memory_monitor.last_check_time = std::chrono::steady_clock::now();
 
-    // 先初始化视频流服务器，不初始化摄像头
-    std::cout << "Initializing video streamers..." << std::endl;
+    // 初始化视频流服务器 - 修改为320x240分辨率
     VideoStreamer left_streamer("192.168.16.247", 5004);
     VideoStreamer right_streamer("192.168.16.247", 5006);
 
-    if (!left_streamer.init(640, 480, 30)) {
-        std::cerr << "Failed to initialize left_streamer" << std::endl;
+    if (!left_streamer.init(320, 240, 30)) {
+        std::cerr << "[ERROR] Failed to initialize left streamer" << std::endl;
         return -1;
     }
 
-    if (!right_streamer.init(640, 480, 30)) {
-        std::cerr << "Failed to initialize right_streamer" << std::endl;
+    if (!right_streamer.init(320, 240, 30)) {
+        std::cerr << "[ERROR] Failed to initialize right streamer" << std::endl;
         return -1;
     }
 
-    std::cout << "RTSP servers started successfully!" << std::endl;
+    std::cout << "[RTSP] Servers started successfully!" << std::endl;
 
-    // 摄像头相关变量
+    // 摄像头和运行状态
     std::unique_ptr<DualCameraCapture> capture;
     std::atomic<bool> cameras_initialized{ false };
     std::atomic<bool> cameras_running{ false };
 
-    // 客户端连接状态监控
+    // 客户端连接状态
     std::atomic<bool> left_client_connected{ false };
     std::atomic<bool> right_client_connected{ false };
     std::atomic<int> total_clients{ 0 };
 
-    // 设置客户端状态回调
+    // 新增：PTS重置标志
+    std::atomic<bool> left_needs_pts_reset{ false };
+    std::atomic<bool> right_needs_pts_reset{ false };
+    std::atomic<uint64_t> left_pts_offset{ 0 };
+    std::atomic<uint64_t> right_pts_offset{ 0 };
+
+    // 设置左侧客户端连接回调
     left_streamer.set_client_callback([&](bool connected) {
-        left_client_connected = connected;
+        bool prev_connected = left_client_connected.exchange(connected);
         int old_count = total_clients.load();
         total_clients = (left_client_connected.load() ? 1 : 0) + (right_client_connected.load() ? 1 : 0);
 
-        if (connected && old_count == 0) {
-            std::cout << "[Main] First client connected to left stream!" << std::endl;
+        if (connected && !prev_connected) {
+            std::cout << "[CLIENT] LEFT client connected" << std::endl;
+            left_needs_pts_reset = true; // 标记需要重置PTS
+
+            if (old_count == 0) {
+                std::cout << "[CLIENT] First client connected (LEFT)" << std::endl;
+            }
         }
-        else if (!connected && total_clients.load() == 0) {
-            std::cout << "[Main] Last client disconnected from left stream!" << std::endl;
+        else if (!connected && prev_connected) {
+            std::cout << "[CLIENT] LEFT client disconnected" << std::endl;
+
+            if (total_clients.load() == 0) {
+                std::cout << "[CLIENT] All clients disconnected" << std::endl;
+            }
         }
         });
 
+    // 设置右侧客户端连接回调
     right_streamer.set_client_callback([&](bool connected) {
-        right_client_connected = connected;
+        bool prev_connected = right_client_connected.exchange(connected);
         int old_count = total_clients.load();
         total_clients = (left_client_connected.load() ? 1 : 0) + (right_client_connected.load() ? 1 : 0);
 
-        if (connected && old_count == 0) {
-            std::cout << "[Main] First client connected to right stream!" << std::endl;
+        if (connected && !prev_connected) {
+            std::cout << "[CLIENT] RIGHT client connected" << std::endl;
+            right_needs_pts_reset = true; // 标记需要重置PTS
+
+            if (old_count == 0) {
+                std::cout << "[CLIENT] First client connected (RIGHT)" << std::endl;
+            }
         }
-        else if (!connected && total_clients.load() == 0) {
-            std::cout << "[Main] Last client disconnected from right stream!" << std::endl;
+        else if (!connected && prev_connected) {
+            std::cout << "[CLIENT] RIGHT client disconnected" << std::endl;
+
+            if (total_clients.load() == 0) {
+                std::cout << "[CLIENT] All clients disconnected" << std::endl;
+            }
         }
         });
 
-    // 流处理线程（支持动态启动/停止摄像头）
+    // 主要处理线程
     std::thread streaming_thread([&]() {
-        std::cout << "[Streaming] Thread started - waiting for clients..." << std::endl;
+        uint64_t frame_pairs_sent = 0;
+        uint64_t sync_success = 0;
+        uint64_t sync_fail = 0;
+        auto start_time = std::chrono::steady_clock::now();
+        auto last_stats_time = start_time;
+        auto last_camera_check = start_time;
 
-        uint64_t frame_pair_count = 0;
-        uint64_t success_count = 0;
-        uint64_t fail_count = 0;
-        uint64_t memory_cleanup_count = 0;
-        auto thread_start = std::chrono::steady_clock::now();
-        auto last_stats_time = thread_start;
-        auto last_camera_check = thread_start;
-        auto last_memory_emergency_check = thread_start;
+        // 新增：客户端连接宽容期管理
+        auto first_client_connect_time = std::chrono::steady_clock::time_point{};
+        bool grace_period_active = false;
+        const int GRACE_PERIOD_SECONDS = 20; // 10秒宽容期
 
         while (!g_should_exit.load()) {
             try {
                 auto current_time = std::chrono::steady_clock::now();
                 int current_clients = total_clients.load();
-                bool cams_initialized = cameras_initialized.load();
+                bool cams_init = cameras_initialized.load();
                 bool cams_running = cameras_running.load();
 
-                // 紧急内存检查（每2秒）
-                if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_memory_emergency_check).count() >= 2) {
-                    if (capture && cams_running) {
-                        auto memory_stats = capture->get_memory_stats();
-                        size_t current_memory = get_memory_usage_mb();
-
-                        // 基于活跃帧数的紧急清理
-                        if (memory_stats.active_frames > 5000) {
-                            std::cout << "[EMERGENCY] Active frames: " << memory_stats.active_frames
-                                << ", triggering emergency cleanup!" << std::endl;
-
-                            size_t cleared = capture->emergency_memory_cleanup();
-                            memory_cleanup_count += cleared;
-
-                            std::cout << "[EMERGENCY] Cleared " << cleared << " frames, memory: "
-                                << get_memory_usage_mb() << "MB" << std::endl;
-                        }
-                        // 基于内存使用量的紧急清理
-                        else if (current_memory > 1000) {  // 超过600MB
-                            std::cout << "[EMERGENCY] Memory usage: " << current_memory
-                                << "MB, triggering emergency cleanup!" << std::endl;
-
-                            size_t cleared = capture->emergency_memory_cleanup();
-                            memory_cleanup_count += cleared;
-                        }
-                        // 预防性帧平衡
-                        else if (memory_stats.active_frames > 2000) {
-                            size_t balanced = capture->balance_frame_queues();
-                            if (balanced > 0) {
-                                memory_cleanup_count += balanced;
-                                std::cout << "[BALANCE] Balanced " << balanced << " frames preventively" << std::endl;
-                            }
-                        }
-                    }
-                    last_memory_emergency_check = current_time;
-                }
-
-                // 每2秒检查一次摄像头状态
+                // 改进的摄像头启动逻辑 - 每2秒检查一次
                 if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_camera_check).count() >= 2) {
-                    // 情况1：有客户端但摄像头未初始化 - 启动摄像头
-                    if (current_clients > 0 && !cams_initialized) {
-                        std::cout << "[Streaming] Clients detected (" << current_clients << "), initializing cameras..." << std::endl;
 
-                        try {
-                            capture = std::make_unique<DualCameraCapture>();
-                            if (capture->init({ "video=USB 2.0 Camera", "video=CyberTrack H3" })) {
-                                capture->start();
-                                cameras_initialized = true;
-                                cameras_running = true;
-                                std::cout << "[Streaming] Cameras initialized and started successfully!" << std::endl;
+                    if (current_clients > 0 && !cams_init) {
+                        // 记录第一个客户端连接时间，开始宽容期
+                        if (!grace_period_active) {
+                            first_client_connect_time = current_time;
+                            grace_period_active = true;
+                            std::cout << "[GRACE] First client connected, starting " << GRACE_PERIOD_SECONDS << "s grace period..." << std::endl;
+                        }
+
+                        // 检查是否应该启动摄像头
+                        bool should_start_cameras = false;
+
+                        if (current_clients >= 2) {
+                            // 两个客户端都连接了，立即启动
+                            should_start_cameras = true;
+                            std::cout << "[CAMERA] Both clients connected, starting cameras..." << std::endl;
+                        }
+                        else {
+                            // 只有一个客户端，检查宽容期
+                            auto grace_elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                                current_time - first_client_connect_time).count();
+
+                            if (grace_elapsed >= GRACE_PERIOD_SECONDS) {
+                                // 宽容期结束，启动摄像头
+                                should_start_cameras = true;
+                                std::cout << "[CAMERA] Grace period ended, starting cameras with " << current_clients << " client(s)..." << std::endl;
                             }
                             else {
-                                std::cerr << "[Streaming] Failed to initialize cameras!" << std::endl;
+                                std::cout << "[GRACE] Waiting for second client... (" << (GRACE_PERIOD_SECONDS - grace_elapsed) << "s remaining)" << std::endl;
+                            }
+                        }
+
+                        if (should_start_cameras) {
+                            try {
+                                capture = std::make_unique<DualCameraCapture>();
+                                if (capture->init({ "video=USB 2.0 Camera", "video=CyberTrack H3" })) {
+                                    capture->start();
+                                    cameras_initialized = true;
+                                    cameras_running = true;
+                                    grace_period_active = false;
+
+                                    // 重置PTS计数器
+                                    frame_pairs_sent = 0;
+                                    left_pts_offset = 0;
+                                    right_pts_offset = 0;
+
+                                    std::cout << "[CAMERA] Cameras started successfully" << std::endl;
+                                }
+                                else {
+                                    std::cerr << "[ERROR] Failed to initialize cameras" << std::endl;
+                                    capture.reset();
+                                }
+                            }
+                            catch (const std::exception& e) {
+                                std::cerr << "[ERROR] Camera init exception: " << e.what() << std::endl;
                                 capture.reset();
                             }
                         }
-                        catch (const std::exception& e) {
-                            std::cerr << "[Streaming] Exception during camera initialization: " << e.what() << std::endl;
-                            capture.reset();
-                        }
                     }
-                    // 情况2：无客户端但摄像头在运行 - 停止摄像头
-                    else if (current_clients == 0 && cams_initialized) {
-                        std::cout << "[Streaming] No clients, shutting down cameras..." << std::endl;
+                    else if (current_clients == 0 && cams_init) {
+                        std::cout << "[CAMERA] Stopping cameras (no clients)" << std::endl;
 
                         if (capture) {
                             capture->stop();
@@ -240,124 +234,121 @@ int main() {
                         }
                         cameras_initialized = false;
                         cameras_running = false;
+                        grace_period_active = false;
 
-                        // 强制垃圾回收
-                        std::this_thread::sleep_for(std::chrono::seconds(1));
-                        size_t memory_after = get_memory_usage_mb();
-                        std::cout << "[Streaming] Cameras shut down, memory: " << memory_after << "MB" << std::endl;
+                        // 重置所有计数器
+                        frame_pairs_sent = 0;
+                        left_pts_offset = 0;
+                        right_pts_offset = 0;
                     }
 
                     last_camera_check = current_time;
                 }
 
-                // 如果摄像头运行中且有客户端，处理帧数据
+                // 处理帧同步和发送
                 if (cams_running && current_clients > 0 && capture) {
                     auto frames = capture->get_sync_yuv420p_frames();
                     if (frames.size() == 2 && frames[0] && frames[1]) {
-                        // 设置PTS以确保同步
-                        frames[0]->pts = frame_pair_count;
-                        frames[1]->pts = frame_pair_count;
+
+                        // 检查是否有客户端需要重置PTS
+                        if (left_needs_pts_reset.exchange(false)) {
+                            left_pts_offset = frame_pairs_sent;
+                            std::cout << "[PTS] Reset LEFT stream PTS (offset=" << left_pts_offset.load() << ")" << std::endl;
+                        }
+
+                        if (right_needs_pts_reset.exchange(false)) {
+                            right_pts_offset = frame_pairs_sent;
+                            std::cout << "[PTS] Reset RIGHT stream PTS (offset=" << right_pts_offset.load() << ")" << std::endl;
+                        }
+
+                        // 设置PTS - 新连接的客户端从0开始
+                        frames[0]->pts = frame_pairs_sent - left_pts_offset.load();
+                        frames[1]->pts = frame_pairs_sent - right_pts_offset.load();
+
+                        // 确保PTS不为负数
+                        if (frames[0]->pts < 0) frames[0]->pts = 0;
+                        if (frames[1]->pts < 0) frames[1]->pts = 0;
 
                         bool left_ok = left_streamer.send_frame(frames[0]);
                         bool right_ok = right_streamer.send_frame(frames[1]);
 
-                        frame_pair_count++;
+                        frame_pairs_sent++;
 
                         if (left_ok || right_ok) {
-                            success_count++;
+                            sync_success++;
                         }
                         else {
-                            fail_count++;
+                            sync_fail++;
                         }
 
-                        // 释放帧内存 - 使用统一接口确保计数器正确
+                        // 释放帧
                         capture->release_frame(&frames[0]);
                         capture->release_frame(&frames[1]);
 
-                        // 每30秒打印统计信息
-                        if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_stats_time).count() >= 30) {
-                            auto total_elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - thread_start).count();
-                            double fps = total_elapsed > 0 ? static_cast<double>(frame_pair_count) / total_elapsed : 0;
-                            size_t memory_mb = get_memory_usage_mb();
-                            size_t sync_queue_size = capture ? capture->get_sync_queue_size() : 0;
-                            auto memory_stats = capture ? capture->get_memory_stats() : MemoryStats{};
-
-                            std::cout << "[Streaming] Stats - Pairs: " << frame_pair_count
-                                << " (success: " << success_count << ", fail: " << fail_count << ")"
-                                << ", FPS: " << fps
-                                << ", Runtime: " << total_elapsed << "s"
-                                << ", Memory: " << memory_mb << "MB"
-                                << ", Queue: " << sync_queue_size
-                                << ", Active frames: " << memory_stats.active_frames
-                                << ", Clients: " << current_clients
-                                << " (L=" << (left_client_connected.load() ? "Y" : "N")
-                                << " R=" << (right_client_connected.load() ? "Y" : "N") << ")"
-                                << ", Cleanups: " << memory_cleanup_count << std::endl;
-
-                            last_stats_time = current_time;
-                        }
-
-                        // 有客户端时快速处理
                         std::this_thread::sleep_for(std::chrono::milliseconds(2));
                     }
                     else {
-                        // 没有帧数据，释放任何获取到的帧
+                        // 释放任何获取到的帧
                         for (auto frame : frames) {
                             if (frame) capture->release_frame(&frame);
                         }
-                        // 等待更多数据
+                        sync_fail++;
                         std::this_thread::sleep_for(std::chrono::milliseconds(10));
                     }
                 }
                 else {
-                    // 无客户端或摄像头未运行时，低频检查
                     std::this_thread::sleep_for(std::chrono::milliseconds(500));
+                }
+
+                // 每30秒打印工作统计
+                if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_stats_time).count() >= 30) {
+                    auto total_elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
+                    double fps = total_elapsed > 0 ? static_cast<double>(frame_pairs_sent) / total_elapsed : 0;
+
+                    std::cout << "[SYNC] Pairs sent: " << frame_pairs_sent
+                        << " (success: " << sync_success << ", fail: " << sync_fail << ")"
+                        << ", FPS: " << std::fixed << std::setprecision(1) << fps
+                        << ", Clients: " << current_clients
+                        << " (L=" << (left_client_connected.load() ? "Y" : "N")
+                        << " R=" << (right_client_connected.load() ? "Y" : "N") << ")"
+                        << ", Memory: " << get_memory_usage_mb() << "MB" << std::endl;
+
+                    if (capture) {
+                        auto stats = capture->get_memory_stats();
+                        std::cout << "[QUEUE] Active frames: " << stats.active_frames
+                            << ", Sync queue: " << capture->get_sync_queue_size() << std::endl;
+                    }
+
+                    last_stats_time = current_time;
                 }
 
             }
             catch (const std::exception& e) {
-                std::cerr << "[Streaming] Exception: " << e.what() << std::endl;
+                std::cerr << "[ERROR] Streaming exception: " << e.what() << std::endl;
                 std::this_thread::sleep_for(std::chrono::milliseconds(1000));
             }
         }
 
-        // 线程退出时清理摄像头
+        // 退出时清理
         if (capture) {
-            std::cout << "[Streaming] Thread exiting, stopping cameras..." << std::endl;
             capture->stop();
             capture.reset();
         }
-
-        auto total_time = std::chrono::duration_cast<std::chrono::seconds>
-            (std::chrono::steady_clock::now() - thread_start).count();
-        std::cout << "[Streaming] Thread exited - Total frames: " << frame_pair_count
-            << " (success: " << success_count << ", fail: " << fail_count << ")"
-            << ", Cleanups: " << memory_cleanup_count
-            << ", Average FPS: " << (total_time > 0 ? static_cast<double>(frame_pair_count) / total_time : 0) << std::endl;
         });
 
-    // 显示RTSP连接信息
-    std::cout << "\n=== RTSP Stream Information ===" << std::endl;
-    std::cout << "Left camera:  " << left_streamer.get_rtsp_url() << std::endl;
-    std::cout << "Right camera: " << right_streamer.get_rtsp_url() << std::endl;
+    // 显示连接信息
+    std::cout << "\n=== Connection Info ===" << std::endl;
+    std::cout << "Left:  " << left_streamer.get_rtsp_url() << std::endl;
+    std::cout << "Right: " << right_streamer.get_rtsp_url() << std::endl;
     std::cout << "\n=== Test Commands ===" << std::endl;
-    std::cout << "Left:  ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay " << left_streamer.get_rtsp_url() << std::endl;
-    std::cout << "Right: ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay " << right_streamer.get_rtsp_url() << std::endl;
-    std::cout << "\n=== Alternative Players ===" << std::endl;
-    std::cout << "VLC:   vlc " << left_streamer.get_rtsp_url() << std::endl;
-    std::cout << "VLC:   vlc " << right_streamer.get_rtsp_url() << std::endl;
-    std::cout << "\n=== Synchronized Playback ===" << std::endl;
-    std::cout << "ffplay -rtsp_transport tcp -flags low_delay " << left_streamer.get_rtsp_url()
-        << " & ffplay -rtsp_transport tcp -flags low_delay " << right_streamer.get_rtsp_url() << std::endl;
-    std::cout << "\n=== Advanced Features ===" << std::endl;
-    std::cout << "- Delayed camera initialization (starts only when clients connect)" << std::endl;
-    std::cout << "- Automatic frame balancing between cameras" << std::endl;
-    std::cout << "- Smart memory monitoring and emergency cleanup" << std::endl;
-    std::cout << "- Automatic camera shutdown when all clients disconnect" << std::endl;
+    std::cout << "ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay " << left_streamer.get_rtsp_url() << std::endl;
+    std::cout << "ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay " << right_streamer.get_rtsp_url() << std::endl;
+    std::cout << "\n=== Grace Period: 10 seconds ====" << std::endl;
+    std::cout << "You can start the second ffplay within 10 seconds of the first one." << std::endl;
     std::cout << "\nPress Ctrl+C to exit..." << std::endl;
-    std::cout << "===============================================" << std::endl;
+    std::cout << "========================" << std::endl;
 
-    // 主监控循环
+    // 主循环
     int wait_count = 0;
     while (!g_should_exit.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -367,75 +358,40 @@ int main() {
         size_t current_memory = get_memory_usage_mb();
         memory_monitor.update(current_memory);
 
-        // 每3秒检查一次内存增长趋势
-        if (wait_count % 3 == 0) {
-            if (memory_monitor.is_critical()) {
-                std::cout << "[CRITICAL] Memory growth rate: " << memory_monitor.growth_rate_mb_per_sec
-                    << " MB/s (consecutive: " << memory_monitor.consecutive_high_growth << ")" << std::endl;
-
-                // 如果有摄像头运行，执行紧急清理
-                if (capture && cameras_running.load()) {
-                    size_t cleared = capture->emergency_memory_cleanup();
-                    std::cout << "[CRITICAL] Emergency cleanup cleared " << cleared << " frames" << std::endl;
-                }
-            }
-            else if (memory_monitor.is_warning()) {
-                std::cout << "[WARNING] Memory growth rate: " << memory_monitor.growth_rate_mb_per_sec
-                    << " MB/s, monitoring closely..." << std::endl;
-
-                // 预防性平衡（只在真正警告时才执行）
-                if (capture && cameras_running.load() && memory_monitor.is_warning()) {
-                    size_t balanced = capture->balance_frame_queues();
-                    if (balanced > 0) {
-                        std::cout << "[WARNING] Preventive balancing cleared " << balanced << " frames" << std::endl;
-                    }
-                }
-            }
+        // 紧急内存清理
+        if (memory_monitor.is_critical(current_memory) && capture && cameras_running.load()) {
+            std::cout << "[EMERGENCY] Memory critical (" << current_memory << "MB), cleaning up..." << std::endl;
+            size_t cleared = capture->emergency_memory_cleanup();
+            std::cout << "[EMERGENCY] Cleared " << cleared << " frames" << std::endl;
         }
 
-        // 每30秒打印一次状态
-        if (wait_count % 30 == 0) {
+        // 每60秒打印系统状态
+        if (wait_count % 60 == 0) {
             int current_clients = total_clients.load();
             bool cams_init = cameras_initialized.load();
             bool cams_run = cameras_running.load();
 
-            std::cout << "[Main] Runtime: " << wait_count << "s"
-                << ", Memory: " << current_memory << "MB"
-                << " (baseline: " << memory_monitor.baseline_mb << "MB"
-                << ", peak: " << memory_monitor.peak_mb << "MB"
-                << ", growth: " << std::fixed << std::setprecision(1) << memory_monitor.growth_rate_mb_per_sec << " MB/s)"
+            std::cout << "[STATUS] Runtime: " << (wait_count / 60) << "min"
+                << ", Memory: " << current_memory << "MB (peak: " << memory_monitor.peak_mb << "MB)"
                 << ", Clients: " << current_clients
                 << " (L=" << (left_client_connected.load() ? "Y" : "N")
                 << " R=" << (right_client_connected.load() ? "Y" : "N") << ")"
-                << ", Cameras: " << (cams_init ? (cams_run ? "RUNNING" : "INIT") : "OFF");
-
-            if (capture && cams_run) {
-                auto stats = capture->get_memory_stats();
-                std::cout << ", Active frames: " << stats.active_frames;
-            }
-
-            std::cout << ". Press Ctrl+C to exit." << std::endl;
+                << ", Cameras: " << (cams_init ? (cams_run ? "RUNNING" : "INIT") : "OFF") << std::endl;
         }
     }
 
-    // 清理资源
-    std::cout << "\n[Main] Shutting down..." << std::endl;
-
-    // 等待流处理线程结束
-    std::cout << "[Main] Waiting for streaming thread..." << std::endl;
+    // 清理
+    std::cout << "\n[MAIN] Stopping streaming thread..." << std::endl;
     if (streaming_thread.joinable()) {
         streaming_thread.join();
     }
 
-    // 停止流媒体服务器
-    std::cout << "[Main] Stopping streamers..." << std::endl;
+    std::cout << "[MAIN] Stopping streamers..." << std::endl;
     left_streamer.stop();
     right_streamer.stop();
 
-    // 打印最终内存使用情况
     size_t final_memory_mb = get_memory_usage_mb();
-    std::cout << "[Main] Final memory usage: " << final_memory_mb << "MB"
-        << " (peak: " << memory_monitor.peak_mb << "MB)" << std::endl;
-    std::cout << "[Main] Cleanup completed. Program exited normally." << std::endl;
+    std::cout << "[MAIN] Final memory: " << final_memory_mb << "MB (peak: " << memory_monitor.peak_mb << "MB)" << std::endl;
+    std::cout << "[MAIN] Program exited normally." << std::endl;
     return 0;
 }

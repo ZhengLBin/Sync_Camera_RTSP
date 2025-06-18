@@ -105,7 +105,7 @@ private:
     std::deque<std::pair<AVFrame*, AVFrame*>> synced_yuv_queue_;
 
     // 配置常量（更严格的限制）
-    static constexpr size_t MAX_RAW_QUEUE_SIZE = 10;     // 从30减少到10
-    static constexpr size_t MAX_SYNC_QUEUE_SIZE = 2;     // 从5减少到2
-    static constexpr int64_t SYNC_THRESHOLD_US = 50000;  // 50ms
+    static constexpr size_t MAX_RAW_QUEUE_SIZE = 15;     
+    static constexpr size_t MAX_SYNC_QUEUE_SIZE = 2;     
+    static constexpr int64_t SYNC_THRESHOLD_US = 300000;  
 };

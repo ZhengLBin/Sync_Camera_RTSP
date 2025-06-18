@@ -1,18 +1,13 @@
-﻿// video_streamer.cpp - 支持客户端连接回调和延迟初始化
+﻿// video_streamer.cpp - 简化调试输出版本
 #include "video_streamer.h"
 #include <iostream>
 #include <cstring>
 #include <sstream>
 
-// 全局调试计数器
-std::atomic<size_t> g_total_frame_buffers_created{ 0 };
-std::atomic<size_t> g_total_frame_buffers_destroyed{ 0 };
-
-// FrameBuffer implementation with debugging
+// FrameBuffer implementation 
 FrameBuffer::FrameBuffer(AVFrame* frame) : pts(frame->pts) {
     size = frame->width * frame->height * 3 / 2;
     data = new uint8_t[size];
-    g_total_frame_buffers_created++;
 
     uint8_t* dst = data;
     uint8_t* src_y = frame->data[0];
@@ -39,60 +34,33 @@ FrameBuffer::FrameBuffer(AVFrame* frame) : pts(frame->pts) {
 
 FrameBuffer::~FrameBuffer() {
     delete[] data;
-    g_total_frame_buffers_destroyed++;
 }
 
 bool initialize_gstreamer_with_diagnostics() {
-    std::cout << "=== GStreamer Diagnostics ===" << std::endl;
-
-    if (gst_is_initialized()) {
-        std::cout << "GStreamer is already initialized." << std::endl;
-    }
-    else {
-        std::cout << "Initializing GStreamer..." << std::endl;
+    if (!gst_is_initialized()) {
         gst_init(nullptr, nullptr);
     }
 
-    guint major, minor, micro, nano;
-    gst_version(&major, &minor, &micro, &nano);
-    std::cout << "GStreamer Version: " << major << "." << minor << "." << micro << "." << nano << std::endl;
+    // 设置日志级别为ERROR，减少噪音
+    gst_debug_set_default_threshold(GST_LEVEL_ERROR);
 
-    // 设置日志级别为WARNING，减少噪音
-    gst_debug_set_default_threshold(GST_LEVEL_WARNING);
-
-    std::vector<std::string> core_plugins = {
-        "coreelements", "videoconvert", "videotestsrc", "app", "x264"
-    };
-
-    for (const auto& plugin_name : core_plugins) {
-        GstPlugin* plugin = gst_plugin_load_by_name(plugin_name.c_str());
-        if (plugin) {
-            std::cout << "Loaded plugin: " << plugin_name << std::endl;
-            gst_object_unref(plugin);
-        }
-        else {
-            std::cout << "Failed to load plugin: " << plugin_name << std::endl;
-        }
-    }
-
+    // 测试关键元素是否可用
     std::vector<std::string> test_elements = {
-        "appsrc", "videoconvert", "x264enc", "rtph264pay", "identity"
+        "appsrc", "videoconvert", "x264enc", "rtph264pay"
     };
 
     bool all_available = true;
     for (const auto& element_name : test_elements) {
         GstElement* element = gst_element_factory_make(element_name.c_str(), nullptr);
         if (element) {
-            std::cout << "[OK] Created element '" << element_name << "'" << std::endl;
             gst_object_unref(element);
         }
         else {
-            std::cout << "[FAIL] Failed to create element '" << element_name << "'" << std::endl;
+            std::cerr << "[ERROR] Missing GStreamer element: " << element_name << std::endl;
             all_available = false;
         }
     }
 
-    std::cout << "=============================" << std::endl;
     return all_available;
 }
 
@@ -103,19 +71,12 @@ VideoStreamer::VideoStreamer(const std::string& rtp_ip, int rtp_port)
     dropped_frame_count_(0), total_memory_allocated_(0), client_connected_(false) {
 
     if (!initialize_gstreamer_with_diagnostics()) {
-        std::cerr << "GStreamer initialization warning: some components may not be available." << std::endl;
+        std::cerr << "[WARNING] Some GStreamer components may not be available" << std::endl;
     }
-
-    std::cout << "[VideoStreamer " << port_ << "] Constructor - memory tracking enabled" << std::endl;
 }
 
 VideoStreamer::~VideoStreamer() {
     stop();
-
-    // 打印最终的内存统计
-    std::cout << "[VideoStreamer " << port_ << "] Destructor - FrameBuffers created: "
-        << g_total_frame_buffers_created.load()
-        << ", destroyed: " << g_total_frame_buffers_destroyed.load() << std::endl;
 }
 
 bool VideoStreamer::init(int width, int height, int fps) {
@@ -123,13 +84,12 @@ bool VideoStreamer::init(int width, int height, int fps) {
     height_ = height;
     fps_ = fps;
 
-    std::cout << "[VideoStreamer " << port_ << "] Initializing (size: "
-        << width << "x" << height << ", fps: " << fps << ")" << std::endl;
+    std::cout << "[RTSP" << port_ << "] Initializing (" << width << "x" << height << "@" << fps << "fps)" << std::endl;
 
     try {
         server_ = gst_rtsp_server_new();
         if (!server_) {
-            std::cerr << "Failed to create RTSP server." << std::endl;
+            std::cerr << "[ERROR] Failed to create RTSP server" << std::endl;
             return false;
         }
 
@@ -137,25 +97,20 @@ bool VideoStreamer::init(int width, int height, int fps) {
         gst_rtsp_server_set_address(server_, "0.0.0.0");
         gst_rtsp_server_set_service(server_, std::to_string(port_).c_str());
 
-        g_object_set(server_,
-            "backlog", 10,
-            nullptr);
-
         mounts_ = gst_rtsp_server_get_mount_points(server_);
         factory_ = gst_rtsp_media_factory_new();
         if (!factory_) {
-            std::cerr << "Failed to create media factory." << std::endl;
+            std::cerr << "[ERROR] Failed to create media factory" << std::endl;
             return false;
         }
 
         std::string launch_desc = create_optimized_pipeline();
-        std::cout << "[VideoStreamer " << port_ << "] Pipeline: " << launch_desc << std::endl;
 
         // 验证pipeline有效性
         GError* error = nullptr;
         GstElement* test_pipeline = gst_parse_launch(launch_desc.c_str(), &error);
         if (!test_pipeline || error) {
-            std::cerr << "Invalid pipeline: " << (error ? error->message : "unknown error") << std::endl;
+            std::cerr << "[ERROR] Invalid pipeline: " << (error ? error->message : "unknown error") << std::endl;
             if (error) g_clear_error(&error);
             return false;
         }
@@ -173,8 +128,6 @@ bool VideoStreamer::init(int width, int height, int fps) {
             static_cast<GstRTSPLowerTrans>(GST_RTSP_LOWER_TRANS_TCP | GST_RTSP_LOWER_TRANS_UDP)
         );
 
-        gst_rtsp_media_factory_set_permissions(factory_, nullptr);
-
         // 连接信号处理
         g_signal_connect(factory_, "media-configure", G_CALLBACK(media_configure_cb), this);
         g_signal_connect(factory_, "media-constructed", G_CALLBACK(media_constructed_cb), this);
@@ -185,11 +138,10 @@ bool VideoStreamer::init(int width, int height, int fps) {
         // 启动GStreamer主循环
         loop_ = g_main_loop_new(nullptr, FALSE);
         if (!loop_) {
-            std::cerr << "Failed to create GMain loop" << std::endl;
+            std::cerr << "[ERROR] Failed to create GMain loop" << std::endl;
             return false;
         }
 
-        std::cout << "[VideoStreamer " << port_ << "] Starting GStreamer main loop..." << std::endl;
         gst_thread_ = std::thread(&VideoStreamer::gstreamer_main_loop, this);
 
         // 等待GStreamer启动
@@ -198,28 +150,21 @@ bool VideoStreamer::init(int width, int height, int fps) {
         // 启动服务器
         guint server_id = gst_rtsp_server_attach(server_, nullptr);
         if (server_id == 0) {
-            std::cerr << "Failed to attach RTSP server to port " << port_ << std::endl;
+            std::cerr << "[ERROR] Failed to attach RTSP server to port " << port_ << std::endl;
             return false;
         }
-
-        std::cout << "[VideoStreamer " << port_ << "] RTSP server attached with ID: " << server_id << std::endl;
 
         running_ = true;
         push_thread_ = std::thread(&VideoStreamer::push_frame_loop, this);
 
         initialized_ = true;
-        std::cout << "[VideoStreamer " << port_ << "] RTSP server started: " << get_rtsp_url() << std::endl;
-
-        // 连接测试建议
-        std::cout << "[VideoStreamer " << port_ << "] To test connection, use:" << std::endl;
-        std::cout << "  ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay " << get_rtsp_url() << std::endl;
-        std::cout << "  或者使用VLC: vlc " << get_rtsp_url() << std::endl;
+        std::cout << "[RTSP" << port_ << "] Server started: " << get_rtsp_url() << std::endl;
 
         return true;
 
     }
     catch (const std::exception& e) {
-        std::cerr << "[VideoStreamer " << port_ << "] Exception during initialization: " << e.what() << std::endl;
+        std::cerr << "[ERROR] Exception during initialization: " << e.what() << std::endl;
         return false;
     }
 }
@@ -238,7 +183,7 @@ void VideoStreamer::notify_client_status(bool connected) {
 
     // 只有状态真正改变时才通知
     if (prev_status != connected) {
-        std::cout << "[VideoStreamer " << port_ << "] Client "
+        std::cout << "[RTSP" << port_ << "] Client "
             << (connected ? "CONNECTED" : "DISCONNECTED") << std::endl;
 
         std::lock_guard<std::mutex> lock(callback_mutex_);
@@ -247,8 +192,7 @@ void VideoStreamer::notify_client_status(bool connected) {
                 client_callback_(connected);
             }
             catch (const std::exception& e) {
-                std::cerr << "[VideoStreamer " << port_ << "] Exception in client callback: "
-                    << e.what() << std::endl;
+                std::cerr << "[ERROR] Exception in client callback: " << e.what() << std::endl;
             }
         }
     }
@@ -262,45 +206,51 @@ bool VideoStreamer::send_frame(AVFrame* frame) {
     if (frame->format != AV_PIX_FMT_YUV420P ||
         frame->width != width_ || frame->height != height_) {
         static int error_count = 0;
-        if (error_count < 5) {
-            std::cerr << "[VideoStreamer " << port_ << "] Frame format/size mismatch: "
-                << "format=" << frame->format << " (expected " << AV_PIX_FMT_YUV420P << "), "
-                << "size=" << frame->width << "x" << frame->height
-                << " (expected " << width_ << "x" << height_ << ")" << std::endl;
+        if (error_count < 3) {
+            std::cerr << "[ERROR] Frame format/size mismatch for port " << port_ << std::endl;
             error_count++;
         }
         return false;
     }
 
-    // 如果没有客户端连接，拒绝帧
-    if (!client_connected_.load()) {
-        dropped_frame_count_++;
-        if (dropped_frame_count_ % 1000 == 0) {
-            std::cout << "[VideoStreamer " << port_ << "] No client, dropped "
-                << dropped_frame_count_ << " frames" << std::endl;
+    // 改进的客户端连接检查 - 允许短期缓存
+    bool client_connected = client_connected_.load();
+    static auto last_client_time = std::chrono::steady_clock::now();
+
+    if (!client_connected) {
+        // 没有客户端时，保持少量缓存以便新客户端连接时有数据
+        std::lock_guard<std::mutex> lock(queue_mutex_);
+
+        // 清空旧帧，只保留最新的1帧作为"预热"
+        while (frame_queue_.size() > 0) {
+            auto old_buffer = frame_queue_.front();
+            total_memory_allocated_ -= old_buffer->size;
+            frame_queue_.pop();
         }
-        return false;
+
+        dropped_frame_count_++;
+        return false; // 暂时还是返回false，但不会积压太多帧
+    }
+    else {
+        // 有客户端连接时更新时间
+        last_client_time = std::chrono::steady_clock::now();
     }
 
-    // 检查队列状态
+    // 检查队列状态 - 稍微放宽条件
     bool can_accept_frame = false;
     size_t current_queue_size = 0;
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         current_queue_size = frame_queue_.size();
 
-        if (need_data_.load() && current_queue_size < 3) {
+        // 放宽接受条件，允许稍大的队列
+        if (need_data_.load() && current_queue_size < 5) { // 从3增加到5
             can_accept_frame = true;
         }
     }
 
     if (!can_accept_frame) {
         dropped_frame_count_++;
-        if (dropped_frame_count_ % 500 == 0) {
-            std::string reason = need_data_.load() ? "queue full" : "GStreamer backpressure";
-            std::cout << "[VideoStreamer " << port_ << "] Dropping frame (" << reason
-                << "), queue: " << current_queue_size << "/3, dropped: " << dropped_frame_count_ << std::endl;
-        }
         return false;
     }
 
@@ -311,8 +261,8 @@ bool VideoStreamer::send_frame(AVFrame* frame) {
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
 
-        // 防止队列过满
-        if (frame_queue_.size() >= 3) {
+        // 防止队列过满 - 稍微放宽
+        if (frame_queue_.size() >= 5) { // 从3增加到5
             auto old_buffer = frame_queue_.front();
             total_memory_allocated_ -= old_buffer->size;
             frame_queue_.pop();
@@ -325,16 +275,37 @@ bool VideoStreamer::send_frame(AVFrame* frame) {
     frame_count_++;
     queue_cv_.notify_one();
 
-    // 减少日志频率
-    if (frame_count_ % 2000 == 0) {
-        std::lock_guard<std::mutex> lock(queue_mutex_);
-        std::cout << "[VideoStreamer " << port_ << "] Frame " << frame_count_
-            << ", dropped " << dropped_frame_count_
-            << ", queue: " << frame_queue_.size() << "/3"
-            << ", mem: " << (total_memory_allocated_ / (1024 * 1024)) << "MB" << std::endl;
+    return true;
+}
+
+// 添加新的客户端连接回调处理
+void VideoStreamer::media_constructed_cb(GstRTSPMediaFactory* factory,
+    GstRTSPMedia* media,
+    gpointer user_data) {
+    VideoStreamer* streamer = static_cast<VideoStreamer*>(user_data);
+
+    // 通知客户端连接
+    streamer->notify_client_status(true);
+
+    // 新增：清理队列中的旧帧，为新客户端提供最新内容
+    {
+        std::lock_guard<std::mutex> lock(streamer->queue_mutex_);
+        size_t cleared = 0;
+        while (streamer->frame_queue_.size() > 1) { // 保留1帧
+            auto old_buffer = streamer->frame_queue_.front();
+            streamer->total_memory_allocated_ -= old_buffer->size;
+            streamer->frame_queue_.pop();
+            cleared++;
+        }
+
+        if (cleared > 0) {
+            std::cout << "[RTSP" << streamer->port_ << "] Cleared " << cleared
+                << " old frames for new client" << std::endl;
+        }
     }
 
-    return true;
+    // 监听媒体断开事件
+    g_signal_connect(media, "unprepared", G_CALLBACK(media_unprepared_cb), user_data);
 }
 
 void VideoStreamer::stop() {
@@ -342,7 +313,7 @@ void VideoStreamer::stop() {
         return;
     }
 
-    std::cout << "[VideoStreamer " << port_ << "] Stopping..." << std::endl;
+    std::cout << "[RTSP" << port_ << "] Stopping..." << std::endl;
     running_ = false;
     initialized_ = false;
 
@@ -379,26 +350,22 @@ void VideoStreamer::stop() {
     }
 
     // 清理队列
-    size_t cleared_memory = 0;
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
         size_t remaining_frames = frame_queue_.size();
         while (!frame_queue_.empty()) {
-            auto frame_buffer = frame_queue_.front();
-            cleared_memory += frame_buffer->size;
             frame_queue_.pop();
         }
         total_memory_allocated_ = 0;
 
         if (remaining_frames > 0) {
-            std::cout << "[VideoStreamer " << port_ << "] Cleared " << remaining_frames
-                << " frames (" << (cleared_memory / (1024 * 1024)) << "MB)" << std::endl;
+            std::cout << "[RTSP" << port_ << "] Cleared " << remaining_frames << " frames" << std::endl;
         }
     }
 
     appsrc_ = nullptr;
-    std::cout << "[VideoStreamer " << port_ << "] Stopped. Total frames: " << frame_count_
-        << ", dropped: " << dropped_frame_count_ << std::endl;
+    std::cout << "[RTSP" << port_ << "] Stopped. Sent: " << frame_count_
+        << ", Dropped: " << dropped_frame_count_ << std::endl;
 }
 
 std::string VideoStreamer::get_rtsp_url() const {
@@ -406,22 +373,16 @@ std::string VideoStreamer::get_rtsp_url() const {
 }
 
 void VideoStreamer::gstreamer_main_loop() {
-    std::cout << "[VideoStreamer " << port_ << "] Starting GStreamer main loop..." << std::endl;
     if (loop_) {
         g_main_loop_run(loop_);
-        std::cout << "[VideoStreamer " << port_ << "] GStreamer main loop exited." << std::endl;
-    }
-    else {
-        std::cerr << "[VideoStreamer " << port_ << "] ERROR: GMain loop is null!" << std::endl;
     }
 }
 
 void VideoStreamer::push_frame_loop() {
-    std::cout << "[VideoStreamer " << port_ << "] Starting frame push thread..." << std::endl;
-
     int push_count = 0;
     int failed_push_count = 0;
-    auto last_stats_time = std::chrono::steady_clock::now();
+    auto start_time = std::chrono::steady_clock::now();
+    auto last_stats_time = start_time;
 
     while (running_.load()) {
         bool has_appsrc = (appsrc_ != nullptr);
@@ -446,14 +407,11 @@ void VideoStreamer::push_frame_loop() {
 
         auto current_time = std::chrono::steady_clock::now();
 
-        // 每60秒打印推送统计
-        if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_stats_time).count() >= 60) {
-            std::cout << "[VideoStreamer " << port_ << "] Push stats - Success: " << push_count
+        // 每2分钟打印推送统计
+        if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_stats_time).count() >= 120) {
+            std::cout << "[RTSP" << port_ << "] Pushed: " << push_count
                 << ", Failed: " << failed_push_count
-                << ", Queue: " << queue_size << "/3"
-                << ", Need data: " << needs_data
-                << ", AppSrc: " << (has_appsrc ? "VALID" : "NULL")
-                << ", Client: " << (client_connected ? "YES" : "NO") << std::endl;
+                << ", Queue: " << queue_size << "/3" << std::endl;
             last_stats_time = current_time;
         }
 
@@ -466,8 +424,11 @@ void VideoStreamer::push_frame_loop() {
         }
     }
 
-    std::cout << "[VideoStreamer " << port_ << "] Frame push thread exited - Pushed: "
-        << push_count << ", Failed: " << failed_push_count << std::endl;
+    auto total_time = std::chrono::duration_cast<std::chrono::seconds>
+        (std::chrono::steady_clock::now() - start_time).count();
+    std::cout << "[RTSP" << port_ << "] Push thread exited - Pushed: " << push_count
+        << ", Failed: " << failed_push_count
+        << ", Avg rate: " << (total_time > 0 ? push_count / total_time : 0) << " fps" << std::endl;
 }
 
 bool VideoStreamer::push_frame_to_appsrc() {
@@ -489,7 +450,6 @@ bool VideoStreamer::push_frame_to_appsrc() {
 
     GstBuffer* buffer = gst_buffer_new_allocate(nullptr, frame_buffer->size, nullptr);
     if (!buffer) {
-        std::cerr << "[VideoStreamer " << port_ << "] Failed to allocate GstBuffer." << std::endl;
         return false;
     }
 
@@ -499,7 +459,6 @@ bool VideoStreamer::push_frame_to_appsrc() {
         gst_buffer_unmap(buffer, &map);
     }
     else {
-        std::cerr << "[VideoStreamer " << port_ << "] Failed to map GstBuffer." << std::endl;
         gst_buffer_unref(buffer);
         return false;
     }
@@ -517,8 +476,8 @@ bool VideoStreamer::push_frame_to_appsrc() {
     GstFlowReturn ret = gst_app_src_push_buffer(GST_APP_SRC(appsrc_), buffer);
     if (ret != GST_FLOW_OK) {
         static int error_count = 0;
-        if (error_count < 10) {
-            std::cerr << "[VideoStreamer " << port_ << "] Failed to push buffer: " << ret << std::endl;
+        if (error_count < 5) {
+            std::cerr << "[ERROR] Failed to push buffer to port " << port_ << ": " << ret << std::endl;
             error_count++;
         }
         return false;
@@ -545,13 +504,13 @@ void VideoStreamer::media_configure_cb(GstRTSPMediaFactory* factory,
     gpointer user_data) {
     VideoStreamer* streamer = static_cast<VideoStreamer*>(user_data);
 
-    std::cout << "[VideoStreamer " << streamer->port_ << "] Configuring media for client..." << std::endl;
+    std::cout << "[RTSP" << streamer->port_ << "] Client connecting..." << std::endl;
 
     GstElement* pipeline = gst_rtsp_media_get_element(media);
     GstElement* appsrc = gst_bin_get_by_name(GST_BIN(pipeline), "mysrc");
 
     if (!appsrc) {
-        std::cerr << "[VideoStreamer " << streamer->port_ << "] Failed to find appsrc element." << std::endl;
+        std::cerr << "[ERROR] Failed to find appsrc element for port " << streamer->port_ << std::endl;
         return;
     }
 
@@ -571,28 +530,11 @@ void VideoStreamer::media_configure_cb(GstRTSPMediaFactory* factory,
     g_signal_connect(appsrc, "enough-data", G_CALLBACK(enough_data_cb), user_data);
 
     gst_rtsp_media_set_latency(media, 50);
-
-    std::cout << "[VideoStreamer " << streamer->port_ << "] Media configured successfully" << std::endl;
 }
 
-void VideoStreamer::media_constructed_cb(GstRTSPMediaFactory* factory,
-    GstRTSPMedia* media,
-    gpointer user_data) {
-    VideoStreamer* streamer = static_cast<VideoStreamer*>(user_data);
-
-    std::cout << "[VideoStreamer " << streamer->port_ << "] Media constructed - client connected!" << std::endl;
-
-    // 通知客户端连接
-    streamer->notify_client_status(true);
-
-    // 监听媒体断开事件
-    g_signal_connect(media, "unprepared", G_CALLBACK(media_unprepared_cb), user_data);
-}
 
 void VideoStreamer::media_unprepared_cb(GstRTSPMedia* media, gpointer user_data) {
     VideoStreamer* streamer = static_cast<VideoStreamer*>(user_data);
-
-    std::cout << "[VideoStreamer " << streamer->port_ << "] Media unprepared - client disconnected!" << std::endl;
 
     // 通知客户端断开
     streamer->notify_client_status(false);
