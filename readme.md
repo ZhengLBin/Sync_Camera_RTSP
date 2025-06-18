@@ -1,121 +1,171 @@
-ffplay -protocol_whitelist "file,udp,rtp" stream_5004.sdp
-ffplay -protocol_whitelist "file,udp,rtp" stream_5006.sdp
-
-
-# 双摄像头捕获与流媒体系统
+# 双摄像头同步捕获与RTSP流媒体系统
 
 ## 项目概述
-
-本项目实现了一个多线程系统，用于同时捕获、同步、显示和流式传输两个USB摄像头的视频。系统从两个不同的摄像头设备捕获帧，基于时间戳进行同步，在双视图窗口中显示它们，并通过RTP协议流式传输同步后的帧。
+本系统实现了一个高效的双USB摄像头同步捕获与RTSP流媒体解决方案。核心功能包括：
+- 双摄像头硬件同步初始化
+- 基于时间戳的帧级同步
+- 低延迟RTSP流媒体传输
+- 智能内存管理与监控
+- 客户端连接状态管理
 
 ## 技术栈与库
-
-- **FFmpeg**: 用于视频捕获、编码和流式传输
-  - libavcodec: 视频编解码
-  - libavformat: 媒体容器处理
-  - libavdevice: 设备输入/输出
-  - libswscale: 图像缩放和像素格式转换
-- **SDL2**: 用于实时视频渲染和显示
-- **C++11/14 特性**:
-  - 标准库容器（vector, deque）
-  - 多线程（std::thread）
-  - 线程同步原语（std::mutex, std::lock_guard）
-  - 原子操作（std::atomic）
-- **网络编程**: RTP（实时传输协议）用于视频流传输
+- **GStreamer**：用于RTSP流媒体传输
+  - appsrc：自定义数据源
+  - x264enc：H.264编码
+  - rtph264pay：RTP封装
+- **FFmpeg**：用于视频捕获和帧处理
+  - libavcodec：视频解码
+  - libavformat：设备输入
+  - libswscale：像素格式转换
+- **C++14特性**：
+  - 多线程(std::thread)
+  - 原子操作(std::atomic)
+  - 智能指针(std::shared_ptr)
+- **系统级优化**：
+  - 内存监控与紧急清理
+  - 零拷贝帧传输
+  - 低延迟配置
 
 ## 架构与组件
 
 ### 核心组件
-
 1. **DualCameraCapture (sync_camera.cpp/h)**
-   - 负责初始化、捕获和同步两个摄像头的视频帧
-   - 实现帧格式转换（原始格式转RGB24和YUV420P）
-   - 基于时间戳进行多摄像头帧同步
-   
-2. **渲染显示系统 (render_display.cpp/h)**
-   - 使用SDL2创建显示窗口
-   - 实时渲染同步的视频帧
-   - 处理用户交互（如按ESC退出）
-   
-3. **视频流传输器 (video_streamer.cpp/h)**
-   - 使用FFmpeg的libavformat实现RTP流传输
-   - 将YUV420P格式的帧编码为H.264流
-   - 维护流传输状态和网络连接
+   - 负责摄像头初始化、帧捕获和同步
+   - 实现YUV420P帧转换
+   - 基于时间戳的多摄像头帧同步
+   - 新增内存监控和紧急清理机制
+
+2. **视频流传输器 (video_streamer.cpp/h)**
+   - 使用GStreamer实现RTSP流传输
+   - 将YUV420P帧编码为H.264流
+   - 实现客户端连接状态管理
+   - 支持PTS(显示时间戳)动态重置
 
 ### 线程模型
+1. **主线程**：系统初始化和状态监控
+2. **摄像头捕获线程**：每个摄像头独立线程(共2个)
+3. **帧同步线程**：匹配双摄像头时间戳
+4. **RTSP服务线程**：GStreamer主循环
+5. **帧推送线程**：向GStreamer管道喂数据
 
-项目采用多线程架构以确保高效的并发处理：
+### 内存管理系统
+```mermaid
+graph LR
+A[帧捕获] --> B[帧队列]
+B --> C{内存监控}
+C -->|超过阈值| D[紧急清理]
+C -->|正常范围| E[同步队列]
+E --> F[RTSP传输]
+```
 
-1. **主线程**：初始化系统和组件，监控退出条件
-2. **摄像头捕获线程**：每个摄像头一个线程，负责连续捕获视频帧（共两个线程）
-3. **同步线程**：处理来自两个摄像头的帧并基于时间戳进行同步
-4. **渲染线程**：显示同步后的视频帧
-5. **流传输线程**：将同步后的帧编码并通过网络发送
+## 工作流程
 
-### 线程同步与安全机制
-
-1. **互斥锁 (std::mutex)**
-   - 保护共享数据结构，如帧队列
-   - 确保线程安全的帧访问和处理
-   
-2. **原子变量 (std::atomic<bool>)**
-   - 用于安全的线程终止信号（should_exit）
-   - 确保所有线程能可靠地接收到停止信号
-   
-3. **队列缓冲机制**
-   - 使用双端队列（std::deque）实现帧缓冲
-   - 防止生产者（捕获线程）和消费者（同步/渲染线程）之间的竞争条件
-
-## 实现流程
-
-### 初始化与启动流程
-
-1. **main.cpp中的启动序列**:
-   - 初始化DualCameraCapture对象
-   - 配置并连接到两个摄像头设备
-   - 启动摄像头捕获和帧同步
-   - 初始化SDL2渲染系统
-   - 创建VideoStreamer实例并配置RTP流
-
-2. **多线程启动**:
-   ```
-   capture.start() → 启动两个摄像头捕获线程和一个同步线程
-   start_rendering() → 启动SDL渲染线程
-   streaming_thread → 启动RTP流传输线程
-   ```
+### 初始化序列
+1. 创建`DualCameraCapture`实例并初始化双摄像头
+2. 创建两个`VideoStreamer`实例(RTSP服务器)
+3. 启动所有工作线程
 
 ### 数据流
+1. **捕获阶段**：
+   - 摄像头线程通过FFmpeg捕获原始帧
+   - 转换为YUV420P格式并添加时间戳
+   - 帧存入带时间戳的队列
 
-1. **捕获阶段**:
-   - 摄像头捕获线程通过FFmpeg从USB摄像头读取原始帧
-   - 将捕获的帧转换为RGB24（用于显示）和YUV420P（用于流传输）格式
-   - 为每个帧添加微秒级时间戳
-   - 将帧推入各自的时间戳帧队列
-   
-2. **同步阶段**:
-   - 同步线程检查两个摄像头的帧时间戳
-   - 当两个摄像头的帧时间戳差异小于阈值（SYNC_THRESHOLD_US）时，将它们作为一对同步帧
-   - 将不满足同步条件的帧丢弃，确保视频流的同步性
-   
-3. **渲染阶段**:
-   - 渲染线程从同步队列获取RGB帧对
-   - 使用SDL2将两个摄像头的帧并排显示在一个窗口中
-   
-4. **流传输阶段**:
-   - 流传输线程从同步队列获取YUV420P帧
-   - 使用H.264编码器将帧编码
-   - 通过RTP协议发送到指定IP和端口
+2. **同步阶段**：
+   - 同步线程比较双摄像头帧时间戳
+   - 时间戳差异<100μs的帧配对为同步帧
+   - 同步帧送入传输队列
 
-### 资源管理与内存安全
+3. **流传输阶段**：
+   - 检查客户端连接状态
+   - 动态重置新客户端的PTS
+   - 通过GStreamer管道编码为H.264
+   - 通过RTP/RTSP传输
 
-1. **RAII原则**:
-   - 所有资源（如FFmpeg上下文、SDL窗口）在构造函数中分配，在析构函数中释放
-   - 使用智能指针和C++的RAII机制确保资源安全
+## 智能客户端管理
+- **宽容期机制**：首客户端连接后等待10秒让第二客户端加入
+- **PTS重置**：新客户端连接时重置时间戳序列
+- **连接状态回调**：实时通知连接变化
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant S as Server
+    C->>S: 连接RTSP
+    S->>S: 启动宽容期计时器(10秒)
+    S->>S: 检查第二客户端
+    alt 10秒内有第二客户端
+        S->>S: 启动双摄像头
+    else 超时
+        S->>S: 单客户端模式启动
+    end
+    S->>C: 发送视频流
+```
 
-2. **帧引用计数**:
-   - 实现帧克隆和释放机制
-   - 确保在多线程环境中安全地共享和释放视频帧内存
+## 内存管理
+- **全局跟踪**：
+  ```cpp
+  std::atomic<size_t> g_total_frames_allocated{0};
+  std::atomic<size_t> g_total_frames_freed{0};
+  std::atomic<size_t> g_active_frame_count{0};
+  ```
+- **紧急清理**：
+  ```cpp
+  size_t emergency_memory_cleanup() {
+    // 保留最新2帧，清理旧帧
+  }
+  ```
+- **队列平衡**：
+  ```cpp
+  size_t balance_frame_queues() {
+    // 防止单个队列帧数超标
+  }
+  ```
 
-3. **错误处理**:
-   - 全面的错误检查和异常处理
-   - 适当的日志记录，帮助识别和诊断问题
+## 构建与运行
+### 依赖项
+- FFmpeg 4.4+
+- GStreamer 1.18+
+- C++14兼容编译器
+
+### 编译命令
+```bash
+g++ -std=c++14 main.cpp sync_camera.cpp video_streamer.cpp \
+    -o dual_cam_streamer \
+    $(pkg-config --cflags --libs libavcodec libavformat libswscale gstreamer-1.0)
+```
+
+### 运行
+```bash
+./dual_cam_streamer
+```
+
+### 测试命令
+```bash
+# 左摄像头流
+ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay rtsp://192.168.16.247:5004/stream
+
+# 右摄像头流
+ffplay -rtsp_transport tcp -fflags nobuffer -flags low_delay rtsp://192.168.16.247:5006/stream
+```
+
+## 系统监控
+运行时控制台显示关键指标：
+```
+[STATUS] Runtime: 5min, Memory: 45MB (peak: 89MB)
+[CAMERA] Pairs sent: 8500 (success: 8490, fail: 10)
+[QUEUE] Active frames: 12, Sync queue: 2
+```
+
+## 故障处理
+1. **高内存使用**：
+   - 系统自动触发紧急清理
+   - 手动发送SIGTERM信号安全重启
+
+2. **客户端断连**：
+   - 自动暂停摄像头捕获
+   - 保持低内存占用待机状态
+
+3. **同步失败**：
+   - 自动丢弃无法匹配的帧
+   - 动态调整同步阈值
+```
