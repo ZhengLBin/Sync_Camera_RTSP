@@ -1,4 +1,4 @@
-#include "render_display.h"
+#include "../includes/render_display.h"
 #include <SDL2/SDL.h>
 #include <iostream>
 #include <thread>

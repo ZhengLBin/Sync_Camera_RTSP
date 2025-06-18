@@ -26,13 +26,15 @@ link_directories(
     "${GSTREAMER_ROOT}/lib"
 )
 
-# Source files
 add_executable(sync_camera
-    sync_camera.cpp
-    sync_camera.h
-    main.cpp
-    video_streamer.cpp
-    video_streamer.h
+  src/main.cpp
+  src/sync_camera.cpp
+  src/video_streamer.cpp
+  src/shared_memory_streamer.cpp
+  
+  includes/sync_camera.h
+  includes/video_streamer.h
+ includes/shared_memory_streamer.h
 )
 
 # Link FFmpeg
@@ -70,13 +72,14 @@ add_custom_command(TARGET sync_camera POST_BUILD
 
 # Copy FFmpeg and GStreamer core DLLs
 set(POST_BUILD_DLLS
-    # FFmpeg
+    # FFmpeg (已有的保持不变)
     "${FFMPEG_ROOT}/bin/avcodec-61.dll"
     "${FFMPEG_ROOT}/bin/avformat-61.dll"
     "${FFMPEG_ROOT}/bin/avutil-59.dll"
     "${FFMPEG_ROOT}/bin/swscale-8.dll"
     "${FFMPEG_ROOT}/bin/avdevice-61.dll"
-    # GStreamer core
+    
+    # GStreamer 核心库
     "${GSTREAMER_ROOT}/bin/gstreamer-1.0-0.dll"
     "${GSTREAMER_ROOT}/bin/gstapp-1.0-0.dll"
     "${GSTREAMER_ROOT}/bin/gstvideo-1.0-0.dll"
@@ -84,6 +87,14 @@ set(POST_BUILD_DLLS
     "${GSTREAMER_ROOT}/bin/glib-2.0-0.dll"
     "${GSTREAMER_ROOT}/bin/gobject-2.0-0.dll"
     "${GSTREAMER_ROOT}/bin/intl-8.dll"
+    
+    # 添加这些重要的 GStreamer 库
+    "${GSTREAMER_ROOT}/bin/gstbase-1.0-0.dll"
+    "${GSTREAMER_ROOT}/bin/gstcontroller-1.0-0.dll"
+    "${GSTREAMER_ROOT}/bin/gstnet-1.0-0.dll"
+    "${GSTREAMER_ROOT}/bin/gio-2.0-0.dll"
+    "${GSTREAMER_ROOT}/bin/gmodule-2.0-0.dll"
+    "${GSTREAMER_ROOT}/bin/gthread-2.0-0.dll"
 )
 foreach(_dll IN LISTS POST_BUILD_DLLS)
     add_custom_command(TARGET sync_camera POST_BUILD
@@ -96,12 +107,25 @@ endforeach()
 # Copy only required GStreamer plugins
 # 按需复制插件，替换下面列表为你项目中实际使用的插件名
 set(REQUIRED_PLUGINS
-    gstapp.dll
-    gstvideoconvertscale.dll         # 或者 gstvideo.dll，根据实际目录情况
-    gstx264.dll           # x264 插件名，可能为 libx264-1.0.dll
-    gstrtp.dll            # RTP 支持
-    gstvideoparsersbad.dll
-    gstrtpmanager.dll
+    # 核心插件（必需）
+    gstcoreelements.dll     # 包含 queue, identity, tee 等基础元素
+    gstapp.dll              # 包含 appsrc, appsink
+    gsttcp.dll              # 包含 tcpserversink, tcpclientsrc
+    
+    # 视频相关插件
+    gstvideoconvertscale.dll # 视频转换和缩放
+    gstvideoparsersbad.dll   # 视频解析器
+    
+    # 编码插件
+    gstx264.dll             # x264 编码器
+    
+    # RTP 相关插件
+    gstrtp.dll              # RTP 支持
+    gstrtpmanager.dll       # RTP 管理
+    
+    # 其他可能需要的插件
+    gstplayback.dll         # 播放相关
+    gsttypefindfunctions.dll # 类型检测
 )
 
 # 创建插件目录

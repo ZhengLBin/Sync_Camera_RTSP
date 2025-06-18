@@ -1,5 +1,5 @@
 ﻿// sync_camera.cpp - 简化调试输出版本
-#include "sync_camera.h"
+#include "../includes/sync_camera.h"
 #include <iostream>
 #include <stdexcept>
 #include <atomic>

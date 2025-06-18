@@ -1,7 +1,7 @@
 // main.cpp 
 
-#include "sync_camera.h"
-#include "video_streamer.h"
+#include "../includes/sync_camera.h"
+#include "../includes/video_streamer.h"
 #include <iostream>
 #include <chrono>
 #include <csignal>
