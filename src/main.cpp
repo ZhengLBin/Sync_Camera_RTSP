@@ -1,4 +1,4 @@
-// main.cpp - ¹²ÏíÄÚ´æ°æ±¾
+ï»¿// main.cpp - è‡ªé€‚åº”æ‘„åƒå¤´æ£€æµ‹ç‰ˆæœ¬
 
 #include "../includes/sync_camera.h"
 #include "../includes/shared_memory_streamer.h"
@@ -6,17 +6,26 @@
 #include <chrono>
 #include <csignal>
 #include <iomanip>
+#include <vector>
+#include <memory>
 
-// WindowsÄÚ´æ¼ì²â
+// Windowså†…å­˜ç›‘æµ‹
 #ifdef _WIN32
 #include <windows.h>
 #include <psapi.h>
 #endif
 
-// È«¾ÖÍË³ö±êÖ¾
+// å…¨å±€é€€å‡ºæ§åˆ¶æ ‡å¿—
 std::atomic<bool> g_should_exit{ false };
 
-// ¼ò»¯µÄÄÚ´æ¼à¿ØÆ÷
+// æ‘„åƒå¤´æ£€æµ‹ç»“æœç»“æ„
+struct CameraDetectionResult {
+    std::vector<std::string> available_cameras;
+    std::string mode;  // "dual" æˆ– "triple"
+    int expected_fps;
+};
+
+// ç®€åŒ–çš„å†…å­˜ç›‘æ§å™¨
 struct MemoryMonitor {
     size_t baseline_mb = 0;
     size_t peak_mb = 0;
@@ -28,11 +37,11 @@ struct MemoryMonitor {
     }
 
     bool is_critical(size_t current_mb) const {
-        return current_mb > 150;  // 150MBãĞÖµ
+        return current_mb > 200;  // 200MBé˜ˆå€¼
     }
 };
 
-// ĞÅºÅ´¦Àíº¯Êı
+// ä¿¡å·å¤„ç†å‡½æ•°
 void signal_handler(int signal) {
     if (signal == SIGINT || signal == SIGTERM) {
         std::cout << "\n[MAIN] Shutting down..." << std::endl;
@@ -40,7 +49,7 @@ void signal_handler(int signal) {
     }
 }
 
-// »ñÈ¡ÄÚ´æÊ¹ÓÃÁ¿(MB)
+// è·å–å†…å­˜ä½¿ç”¨é‡(MB)
 size_t get_memory_usage_mb() {
 #ifdef _WIN32
     PROCESS_MEMORY_COUNTERS pmc;
@@ -51,48 +60,132 @@ size_t get_memory_usage_mb() {
     return 0;
 }
 
+// æ£€æµ‹å¯ç”¨æ‘„åƒå¤´
+CameraDetectionResult detect_available_cameras() {
+    CameraDetectionResult result;
+
+    std::cout << "[DETECTION] Detecting available cameras..." << std::endl;
+
+    // é¢„å®šä¹‰çš„æ‘„åƒå¤´åˆ—è¡¨ï¼ˆæŒ‰ä¼˜å…ˆçº§æ’åºï¼‰
+    std::vector<std::string> candidate_cameras = {
+        "video=USB Camera",      // ä¸»æ‘„åƒå¤´ (é«˜ä¼˜å…ˆçº§)
+        "video=CyberTrack H3",   // è¾…æ‘„åƒå¤´ (é«˜ä¼˜å…ˆçº§)
+        "video=USB 2.0 Camera"   // ç¬¬ä¸‰æ‘„åƒå¤´ (ä½ä¼˜å…ˆçº§ï¼Œå¯é€‰)
+    };
+
+    // é€ä¸€æµ‹è¯•æ‘„åƒå¤´å¯ç”¨æ€§
+    for (const auto& camera_name : candidate_cameras) {
+        std::cout << "[DETECTION] Testing: " << camera_name << std::endl;
+
+        const AVInputFormat* input_format = av_find_input_format("dshow");
+        AVFormatContext* test_fmt_ctx = nullptr;
+        AVDictionary* options = nullptr;
+
+        // è®¾ç½®å¿«é€Ÿæ£€æµ‹å‚æ•°
+        av_dict_set(&options, "video_size", "640x480", 0);
+        av_dict_set(&options, "framerate", "30", 0);
+        av_dict_set(&options, "vcodec", "mjpeg", 0);
+        av_dict_set(&options, "probesize", "32", 0);
+        av_dict_set(&options, "analyzeduration", "1000000", 0);  // 1ç§’è¶…æ—¶
+
+        int ret = avformat_open_input(&test_fmt_ctx, camera_name.c_str(), input_format, &options);
+        av_dict_free(&options);
+
+        if (ret == 0) {
+            std::cout << "[DETECTION] âœ“ Found: " << camera_name << std::endl;
+            result.available_cameras.push_back(camera_name);
+            avformat_close_input(&test_fmt_ctx);
+        }
+        else {
+            std::cout << "[DETECTION] âœ— Not available: " << camera_name << std::endl;
+        }
+    }
+
+    // å†³å®šå·¥ä½œæ¨¡å¼
+    size_t camera_count = result.available_cameras.size();
+
+    if (camera_count >= 3) {
+        result.mode = "triple";
+        result.expected_fps = 20;  // ä¸‰æ‘„åƒå¤´æ¨¡å¼çº¦20fps
+        std::cout << "[DETECTION] Mode: Triple Camera Sync (3 cameras detected)" << std::endl;
+    }
+    else if (camera_count >= 2) {
+        result.mode = "dual";
+        result.expected_fps = 30;  // åŒæ‘„åƒå¤´æ¨¡å¼30fps
+        std::cout << "[DETECTION] Mode: Dual Camera Sync (2 cameras detected)" << std::endl;
+        // åªä½¿ç”¨å‰ä¸¤ä¸ªæ‘„åƒå¤´
+        result.available_cameras.resize(2);
+    }
+    else {
+        result.mode = "none";
+        result.expected_fps = 0;
+        std::cout << "[DETECTION] Error: Need at least 2 cameras for sync" << std::endl;
+    }
+
+    return result;
+}
+
+// åˆ›å»ºæµä¼ è¾“å™¨
+std::vector<std::unique_ptr<SharedMemoryStreamer>> create_streamers(const CameraDetectionResult& detection) {
+    std::vector<std::unique_ptr<SharedMemoryStreamer>> streamers;
+
+    size_t camera_count = detection.available_cameras.size();
+    std::vector<std::string> stream_names = { "/tmp/camera_left", "/tmp/camera_right", "/tmp/camera_third" };
+
+    for (size_t i = 0; i < camera_count; ++i) {
+        auto streamer = std::make_unique<SharedMemoryStreamer>(stream_names[i]);
+        if (!streamer->init(640, 480, detection.expected_fps)) {
+            std::cerr << "[ERROR] Failed to initialize streamer " << i << std::endl;
+            return {};
+        }
+        streamers.push_back(std::move(streamer));
+    }
+
+    std::cout << "[SHM] " << camera_count << " shared memory streamers started successfully!" << std::endl;
+    return streamers;
+}
+
 int main() {
-    // ÉèÖÃĞÅºÅ´¦Àí
+    // è®¾ç½®ä¿¡å·å¤„ç†
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    // ÉèÖÃFFmpegÈÕÖ¾¼¶±ğ
+    // è®¾ç½®FFmpegæ—¥å¿—çº§åˆ«
     av_log_set_level(AV_LOG_ERROR);
 
-    std::cout << "=== Dual Camera Shared Memory Streamer ===" << std::endl;
+    // åˆå§‹åŒ–libavdevice
+    avdevice_register_all();
 
-    // ³õÊ¼»¯ÄÚ´æ¼à¿Ø
+    std::cout << "=== Adaptive Camera Sync System ===" << std::endl;
+
+    // æ£€æµ‹å¯ç”¨æ‘„åƒå¤´
+    auto detection = detect_available_cameras();
+
+    if (detection.mode == "none") {
+        std::cerr << "[ERROR] Not enough cameras available for sync" << std::endl;
+        return -1;
+    }
+
+    // åˆå§‹åŒ–å†…å­˜ç›‘æ§
     MemoryMonitor memory_monitor;
     memory_monitor.baseline_mb = get_memory_usage_mb();
 
-    // ³õÊ¼»¯¹²ÏíÄÚ´æÁ÷Ã½ÌåÆ÷ - ·Ö±æÂÊÉèÎª320x240
-    SharedMemoryStreamer left_streamer("/tmp/camera_left");
-    SharedMemoryStreamer right_streamer("/tmp/camera_right");
-
-    if (!left_streamer.init(320, 240, 30)) {
-        std::cerr << "[ERROR] Failed to initialize left shared memory streamer" << std::endl;
+    // åˆ›å»ºæµä¼ è¾“å™¨
+    auto streamers = create_streamers(detection);
+    if (streamers.empty()) {
+        std::cerr << "[ERROR] Failed to create streamers" << std::endl;
         return -1;
     }
 
-    if (!right_streamer.init(320, 240, 30)) {
-        std::cerr << "[ERROR] Failed to initialize right shared memory streamer" << std::endl;
-        return -1;
-    }
-
-    std::cout << "[SHM] Shared memory streamers started successfully!" << std::endl;
-
-    // ÉãÏñÍ·Ïà¹Ø×´Ì¬¹ÜÀí
-    std::unique_ptr<DualCameraCapture> capture;
+    // æ‘„åƒå¤´æ•è·ç®¡ç†
+    std::unique_ptr<BaseCameraCapture> capture;  // ä½¿ç”¨åŸºç±»æŒ‡é’ˆ
     std::atomic<bool> cameras_initialized{ false };
     std::atomic<bool> cameras_running{ false };
+    bool should_run_cameras = true;
 
-    // ÓÉÓÚ¹²ÏíÄÚ´æ²»ĞèÒª¿Í»§¶ËÁ¬½Ó¼ì²â£¬ÎÒÃÇ¼ò»¯Âß¼­
-    // Ä¬ÈÏÆô¶¯ÉãÏñÍ·£¨»òÕßÄã¿ÉÒÔÍ¨¹ıÆäËû·½Ê½¿ØÖÆ£©
-    bool should_run_cameras = true; // ¿ÉÒÔÍ¨¹ıÅäÖÃÎÄ¼ş»òÃüÁîĞĞ²ÎÊı¿ØÖÆ
-
-    // Ö÷ÒªÁ÷Ã½ÌåÏß³Ì
+    // ä¸»è¦æµä¼ è¾“çº¿ç¨‹
     std::thread streaming_thread([&]() {
-        uint64_t frame_pairs_sent = 0;
+        uint64_t frame_groups_sent = 0;
         uint64_t sync_success = 0;
         uint64_t sync_fail = 0;
         auto start_time = std::chrono::steady_clock::now();
@@ -105,25 +198,33 @@ int main() {
                 bool cams_init = cameras_initialized.load();
                 bool cams_running = cameras_running.load();
 
-                // ¼ò»¯µÄÉãÏñÍ·Æô¶¯Âß¼­ - Ã¿2Ãë¼ì²éÒ»´Î
+                // æ¯2ç§’æ£€æŸ¥ä¸€æ¬¡æ‘„åƒå¤´çŠ¶æ€
                 if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_camera_check).count() >= 2) {
 
                     if (should_run_cameras && !cams_init) {
-                        std::cout << "[CAMERA] Starting cameras..." << std::endl;
+                        std::cout << "[CAMERA] Starting " << detection.mode << " camera sync..." << std::endl;
+
                         try {
-                            capture = std::make_unique<DualCameraCapture>();
-                            if (capture->init({ "video=USB 2.0 Camera", "video=CyberTrack H3" })) {
+                            // æ ¹æ®æ£€æµ‹ç»“æœåˆ›å»ºç›¸åº”çš„æ•è·å™¨
+                            if (detection.mode == "triple") {
+                                capture = std::make_unique<TripleCameraCapture>();
+                            }
+                            else {
+                                capture = std::make_unique<DualCameraCapture>();
+                            }
+
+                            if (capture->init(detection.available_cameras)) {
                                 capture->start();
                                 cameras_initialized = true;
                                 cameras_running = true;
+                                frame_groups_sent = 0;
 
-                                // ÖØÖÃPTS¼ÆÊıÆ÷
-                                frame_pairs_sent = 0;
-
-                                std::cout << "[CAMERA] Cameras started successfully" << std::endl;
+                                std::cout << "[CAMERA] " << detection.mode << " cameras started successfully ("
+                                    << detection.available_cameras.size() << " cameras, ~"
+                                    << detection.expected_fps << "fps)" << std::endl;
                             }
                             else {
-                                std::cerr << "[ERROR] Failed to initialize cameras" << std::endl;
+                                std::cerr << "[ERROR] Failed to initialize " << detection.mode << " cameras" << std::endl;
                                 capture.reset();
                             }
                         }
@@ -141,43 +242,51 @@ int main() {
                         }
                         cameras_initialized = false;
                         cameras_running = false;
-
-                        // ÖØÖÃ¼ÆÊıÆ÷
-                        frame_pairs_sent = 0;
+                        frame_groups_sent = 0;
                     }
 
                     last_camera_check = current_time;
                 }
 
-                // ´¦ÀíÖ¡Êı¾İ
+                // å¤„ç†å¸§æ•°æ®
                 if (cams_running && capture) {
                     auto frames = capture->get_sync_yuv420p_frames();
-                    if (frames.size() == 2 && frames[0] && frames[1]) {
+                    size_t expected_frame_count = detection.available_cameras.size();
 
-                        // ÉèÖÃPTS
-                        frames[0]->pts = frame_pairs_sent;
-                        frames[1]->pts = frame_pairs_sent;
+                    if (frames.size() == expected_frame_count &&
+                        std::all_of(frames.begin(), frames.end(), [](AVFrame* f) { return f != nullptr; })) {
 
-                        bool left_ok = left_streamer.send_frame(frames[0]);
-                        bool right_ok = right_streamer.send_frame(frames[1]);
+                        // è®¾ç½®PTS
+                        for (size_t i = 0; i < frames.size(); ++i) {
+                            frames[i]->pts = frame_groups_sent;
+                        }
 
-                        frame_pairs_sent++;
+                        // å‘é€åˆ°æ‰€æœ‰æµä¼ è¾“å™¨
+                        bool all_success = true;
+                        for (size_t i = 0; i < frames.size() && i < streamers.size(); ++i) {
+                            if (!streamers[i]->send_frame(frames[i])) {
+                                all_success = false;
+                            }
+                        }
 
-                        if (left_ok && right_ok) {
+                        frame_groups_sent++;
+
+                        if (all_success) {
                             sync_success++;
                         }
                         else {
                             sync_fail++;
                         }
 
-                        // ÊÍ·ÅÖ¡
-                        capture->release_frame(&frames[0]);
-                        capture->release_frame(&frames[1]);
+                        // é‡Šæ”¾å¸§
+                        for (auto frame : frames) {
+                            capture->release_frame(&frame);
+                        }
 
                         std::this_thread::sleep_for(std::chrono::milliseconds(2));
                     }
                     else {
-                        // ÊÍ·ÅÈÎºÎ»ñÈ¡µ½µÄÖ¡
+                        // é‡Šæ”¾ä»»ä½•è·å–åˆ°çš„å¸§
                         for (auto frame : frames) {
                             if (frame) capture->release_frame(&frame);
                         }
@@ -189,12 +298,12 @@ int main() {
                     std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 }
 
-                // Ã¿30Ãë´òÓ¡¹¤×÷×´Ì¬Í³¼Æ
+                // æ¯30ç§’æ‰“å°å·¥ä½œçŠ¶æ€ç»Ÿè®¡
                 if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_stats_time).count() >= 30) {
                     auto total_elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
-                    double fps = total_elapsed > 0 ? static_cast<double>(frame_pairs_sent) / total_elapsed : 0;
+                    double fps = total_elapsed > 0 ? static_cast<double>(frame_groups_sent) / total_elapsed : 0;
 
-                    std::cout << "[SYNC] Pairs sent: " << frame_pairs_sent
+                    std::cout << "[SYNC] " << detection.mode << " sync - Groups sent: " << frame_groups_sent
                         << " (success: " << sync_success << ", fail: " << sync_fail << ")"
                         << ", FPS: " << std::fixed << std::setprecision(1) << fps
                         << ", Memory: " << get_memory_usage_mb() << "MB" << std::endl;
@@ -215,68 +324,76 @@ int main() {
             }
         }
 
-        // ÍË³öÊ±ÇåÀí
+        // é€€å‡ºæ—¶æ¸…ç†
         if (capture) {
             capture->stop();
             capture.reset();
         }
         });
 
-
+    // æ˜¾ç¤ºè¿æ¥ä¿¡æ¯
     std::cout << "\n=== TCP Stream Info ===" << std::endl;
-    std::cout << "Left camera port:  " << left_streamer.get_port() << std::endl;
-    std::cout << "Right camera port: " << right_streamer.get_port() << std::endl;
+    std::cout << "Mode: " << detection.mode << " camera sync" << std::endl;
+    std::cout << "Expected FPS: ~" << detection.expected_fps << std::endl;
+
+    for (size_t i = 0; i < streamers.size(); ++i) {
+        std::vector<std::string> camera_labels = { "Left", "Right", "Third" };
+        std::cout << camera_labels[i] << " camera port: " << streamers[i]->get_port() << std::endl;
+    }
+
     std::cout << "\n=== Python Consumer Example ===" << std::endl;
     std::cout << "import cv2" << std::endl;
-    std::cout << "cap_left = cv2.VideoCapture('tcpclientsrc host=127.0.0.1 port="
-        << left_streamer.get_port() << " ! videoconvert ! appsink', cv2.CAP_GSTREAMER)" << std::endl;
-    std::cout << "cap_right = cv2.VideoCapture('tcpclientsrc host=127.0.0.1 port="
-        << right_streamer.get_port() << " ! videoconvert ! appsink', cv2.CAP_GSTREAMER)" << std::endl;
-    std::cout << "ret_l, frame_l = cap_left.read()" << std::endl;
-    std::cout << "ret_r, frame_r = cap_right.read()" << std::endl;
+    for (size_t i = 0; i < streamers.size(); ++i) {
+        std::vector<std::string> var_names = { "cap_left", "cap_right", "cap_third" };
+        std::cout << var_names[i] << " = cv2.VideoCapture('tcpclientsrc host=127.0.0.1 port="
+            << streamers[i]->get_port() << " ! videoconvert ! appsink', cv2.CAP_GSTREAMER)" << std::endl;
+    }
+
     std::cout << "\nPress Ctrl+C to exit..." << std::endl;
     std::cout << "========================" << std::endl;
 
-    // Ö÷Ñ­»·
+    // ä¸»å¾ªç¯
     int wait_count = 0;
     while (!g_should_exit.load()) {
         std::this_thread::sleep_for(std::chrono::seconds(1));
         wait_count++;
 
-        // ÄÚ´æ¼à¿Ø
+        // å†…å­˜ç›‘æ§
         size_t current_memory = get_memory_usage_mb();
         memory_monitor.update(current_memory);
 
-        // ½ô¼±ÄÚ´æÇåÀí
+        // ç´§æ€¥å†…å­˜æ¸…ç†
         if (memory_monitor.is_critical(current_memory) && capture && cameras_running.load()) {
             std::cout << "[EMERGENCY] Memory critical (" << current_memory << "MB), cleaning up..." << std::endl;
             size_t cleared = capture->emergency_memory_cleanup();
             std::cout << "[EMERGENCY] Cleared " << cleared << " frames" << std::endl;
         }
 
-        // Ã¿60Ãë´òÓ¡ÏµÍ³×´Ì¬
+        // æ¯60ç§’æ‰“å°ç³»ç»ŸçŠ¶æ€
         if (wait_count % 60 == 0) {
             bool cams_init = cameras_initialized.load();
             bool cams_run = cameras_running.load();
 
             std::cout << "[STATUS] Runtime: " << (wait_count / 60) << "min"
                 << ", Memory: " << current_memory << "MB (peak: " << memory_monitor.peak_mb << "MB)"
+                << ", Mode: " << detection.mode
                 << ", Cameras: " << (cams_init ? (cams_run ? "RUNNING" : "INIT") : "OFF") << std::endl;
         }
     }
 
-    // ÇåÀí
+    // æ¸…ç†
     std::cout << "\n[MAIN] Stopping streaming thread..." << std::endl;
     if (streaming_thread.joinable()) {
         streaming_thread.join();
     }
 
     std::cout << "[MAIN] Stopping streamers..." << std::endl;
-    left_streamer.stop();
-    right_streamer.stop();
+    for (auto& streamer : streamers) {
+        streamer->stop();
+    }
 
     size_t final_memory_mb = get_memory_usage_mb();
     std::cout << "[MAIN] Final memory: " << final_memory_mb << "MB (peak: " << memory_monitor.peak_mb << "MB)" << std::endl;
-    std::cout << "[MAIN] Program exited normally." << std::endl;
+    std::cout << "[MAIN] " << detection.mode << " camera system exited normally." << std::endl;
     return 0;
 }
