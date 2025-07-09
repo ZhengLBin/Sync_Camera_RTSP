@@ -28,13 +28,13 @@ link_directories(
 
 add_executable(sync_camera
   src/main.cpp
-  src/sync_camera.cpp
-  src/video_streamer.cpp
-  src/shared_memory_streamer.cpp
+  "src/multi_camera_sync.cpp"
   
-  includes/sync_camera.h
-  includes/video_streamer.h
- includes/shared_memory_streamer.h
+  "src/tcp_streamer.cpp"
+  
+  "includes/multi_camera_sync.h"
+  
+ "includes/tcp_streamer.h"
 )
 
 # Link FFmpeg

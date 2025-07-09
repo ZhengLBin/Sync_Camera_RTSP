@@ -38,10 +38,10 @@ private:
 };
 
 // TCP流媒体器类（替代共享内存）
-class SharedMemoryStreamer {
+class TCPStreamer {
 public:
-    explicit SharedMemoryStreamer(const std::string& name, int port = 0);
-    ~SharedMemoryStreamer();
+    explicit TCPStreamer(const std::string& name, int port = 0);
+    ~TCPStreamer();
 
     // 初始化TCP流
     bool init(int width, int height, int fps);

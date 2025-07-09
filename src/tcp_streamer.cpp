@@ -1,11 +1,11 @@
 // shared_memory_streamer.cpp - 修复的原始I420 TCP流版本
-#include "../includes/shared_memory_streamer.h"
+#include "../includes/tcp_streamer.h"
 #include <iostream>
 #include <cstring>
 #include <sstream>
 
 // 静态端口分配
-int SharedMemoryStreamer::next_port_ = 5010;
+int TCPStreamer::next_port_ = 5010;
 
 // ShmFrameBuffer构造保持不变
 ShmFrameBuffer::ShmFrameBuffer(AVFrame* frame) : pts(frame->pts) {
@@ -66,8 +66,8 @@ bool initialize_gstreamer_for_shm() {
     return all_available;
 }
 
-// SharedMemoryStreamer构造函数
-SharedMemoryStreamer::SharedMemoryStreamer(const std::string& name, int port)
+// TCPStreamer构造函数
+TCPStreamer::TCPStreamer(const std::string& name, int port)
     : name_(name), width_(0), height_(0), fps_(0),
     pipeline_(nullptr), appsrc_(nullptr), bus_(nullptr), bus_watch_id_(0),
     running_(false), initialized_(false), need_data_(true),
@@ -82,11 +82,11 @@ SharedMemoryStreamer::SharedMemoryStreamer(const std::string& name, int port)
     }
 }
 
-SharedMemoryStreamer::~SharedMemoryStreamer() {
+TCPStreamer::~TCPStreamer() {
     stop();
 }
 
-bool SharedMemoryStreamer::init(int width, int height, int fps) {
+bool TCPStreamer::init(int width, int height, int fps) {
     width_ = width;
     height_ = height;
     fps_ = fps;
@@ -107,7 +107,7 @@ bool SharedMemoryStreamer::init(int width, int height, int fps) {
     }
 
     running_ = true;
-    push_thread_ = std::thread(&SharedMemoryStreamer::push_frame_loop, this);
+    push_thread_ = std::thread(&TCPStreamer::push_frame_loop, this);
 
     initialized_ = true;
 
@@ -121,7 +121,7 @@ bool SharedMemoryStreamer::init(int width, int height, int fps) {
 }
 
 
-bool SharedMemoryStreamer::create_pipeline() {
+bool TCPStreamer::create_pipeline() {
     std::ostringstream pipeline_str;
 
     // 确保帧率信息正确传递的pipeline
@@ -187,7 +187,7 @@ bool SharedMemoryStreamer::create_pipeline() {
 }
 
 // 修复时间戳以确保正确的帧率
-bool SharedMemoryStreamer::push_frame_to_appsrc() {
+bool TCPStreamer::push_frame_to_appsrc() {
     if (!appsrc_ || !running_.load()) {
         return false;
     }
@@ -255,7 +255,7 @@ bool SharedMemoryStreamer::push_frame_to_appsrc() {
 }
 
 // 改进的send_frame方法，添加更多检查
-bool SharedMemoryStreamer::send_frame(AVFrame* frame) {
+bool TCPStreamer::send_frame(AVFrame* frame) {
     if (!running_.load() || !initialized_) {
         return false;
     }
@@ -319,7 +319,7 @@ bool SharedMemoryStreamer::send_frame(AVFrame* frame) {
     return true;
 }
 
-void SharedMemoryStreamer::push_frame_loop() {
+void TCPStreamer::push_frame_loop() {
     int push_count = 0;
     int failed_push_count = 0;
     auto start_time = std::chrono::steady_clock::now();
@@ -365,7 +365,7 @@ void SharedMemoryStreamer::push_frame_loop() {
 
 
 
-void SharedMemoryStreamer::stop() {
+void TCPStreamer::stop() {
     if (!running_.load()) {
         return;
     }
@@ -415,7 +415,7 @@ void SharedMemoryStreamer::stop() {
 }
 
 // 添加调试方法
-void SharedMemoryStreamer::print_pipeline_state() {
+void TCPStreamer::print_pipeline_state() {
     if (!pipeline_) return;
 
     GstState state;
@@ -433,7 +433,7 @@ void SharedMemoryStreamer::print_pipeline_state() {
     std::cout << std::endl;
 }
 
-void SharedMemoryStreamer::debug_caps_info() {
+void TCPStreamer::debug_caps_info() {
     if (!appsrc_) return;
 
     GstCaps* caps;
@@ -447,18 +447,18 @@ void SharedMemoryStreamer::debug_caps_info() {
 }
 
 // 回调函数保持不变
-void SharedMemoryStreamer::need_data_cb(GstElement* appsrc, guint unused, gpointer user_data) {
-    SharedMemoryStreamer* streamer = static_cast<SharedMemoryStreamer*>(user_data);
+void TCPStreamer::need_data_cb(GstElement* appsrc, guint unused, gpointer user_data) {
+    TCPStreamer* streamer = static_cast<TCPStreamer*>(user_data);
     streamer->need_data_ = true;
 }
 
-void SharedMemoryStreamer::enough_data_cb(GstElement* appsrc, gpointer user_data) {
-    SharedMemoryStreamer* streamer = static_cast<SharedMemoryStreamer*>(user_data);
+void TCPStreamer::enough_data_cb(GstElement* appsrc, gpointer user_data) {
+    TCPStreamer* streamer = static_cast<TCPStreamer*>(user_data);
     streamer->need_data_ = false;
 }
 
-gboolean SharedMemoryStreamer::bus_call(GstBus* bus, GstMessage* msg, gpointer user_data) {
-    SharedMemoryStreamer* streamer = static_cast<SharedMemoryStreamer*>(user_data);
+gboolean TCPStreamer::bus_call(GstBus* bus, GstMessage* msg, gpointer user_data) {
+    TCPStreamer* streamer = static_cast<TCPStreamer*>(user_data);
 
     switch (GST_MESSAGE_TYPE(msg)) {
     case GST_MESSAGE_EOS:

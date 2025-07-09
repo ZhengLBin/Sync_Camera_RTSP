@@ -18,16 +18,23 @@ class AdaptiveCameraClient:
         
         self.running = False
         self.start_time = None
-        self.camera_mode = None  # 'dual' 或 'triple'
+        self.camera_mode = None  # 'dual', 'triple', 'quad'
         
         # 动态摄像头队列和计数器
         self.camera_queues = []
         self.frame_counters = []
-        self.camera_names = ["Left", "Right", "Third"]
+        self.camera_names = ["Left", "Right", "Third", "Fourth"]  # 新增第四个摄像头
         self.camera_ports = []
         
         # 显示模式
         self.display_mode = 'combined'  # 'separate' 或 'combined'
+        
+        # 性能阈值（针对不同模式）
+        self.fps_thresholds = {
+            'dual': 28,    # 双摄像头30fps
+            'triple': 18,  # 三摄像头20fps
+            'quad': 16     # 四摄像头18fps
+        }
     
     def detect_available_streams(self):
         """检测可用的摄像头流"""
@@ -35,8 +42,8 @@ class AdaptiveCameraClient:
         
         available_ports = []
         
-        # 检测最多3个端口
-        for i in range(3):
+        # 检测最多4个端口
+        for i in range(4):
             port = self.start_port + i
             try:
                 test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -55,7 +62,11 @@ class AdaptiveCameraClient:
                 break
         
         # 确定模式
-        if len(available_ports) >= 3:
+        if len(available_ports) >= 4:
+            self.camera_mode = 'quad'
+            self.camera_ports = available_ports[:4]
+            print(f"[DETECTION] Mode: Quad Camera ({len(self.camera_ports)} streams)")
+        elif len(available_ports) >= 3:
             self.camera_mode = 'triple'
             self.camera_ports = available_ports[:3]
             print(f"[DETECTION] Mode: Triple Camera ({len(self.camera_ports)} streams)")
@@ -70,7 +81,7 @@ class AdaptiveCameraClient:
         
         # 初始化队列和计数器
         for i in range(len(self.camera_ports)):
-            self.camera_queues.append(queue.Queue(maxsize=2))
+            self.camera_queues.append(queue.Queue(maxsize=3))  # 增加队列大小
             self.frame_counters.append([0])
         
         return True
@@ -113,11 +124,11 @@ class AdaptiveCameraClient:
         
         # 添加半透明背景
         overlay = frame.copy()
-        cv2.rectangle(overlay, (5, 5), (280, 160), (0, 0, 0), -1)
+        cv2.rectangle(overlay, (5, 5), (300, 180), (0, 0, 0), -1)
         frame = cv2.addWeighted(frame, 0.7, overlay, 0.3, 0)
         
         # 选择颜色（区分摄像头）
-        colors = [(0, 255, 0), (0, 255, 255), (255, 0, 255)]  # 绿、黄、品红
+        colors = [(0, 255, 0), (0, 255, 255), (255, 0, 255), (255, 128, 0)]  # 绿、黄、品红、橙
         color = colors[camera_index % len(colors)]
         
         # 绘制信息文本
@@ -132,6 +143,14 @@ class AdaptiveCameraClient:
         cv2.putText(frame, f'Mode: {self.camera_mode.upper()}', (10, 145), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
         
+        # 为四摄像头模式添加特殊标识
+        if self.camera_mode == 'quad':
+            if camera_index == 2:  # 第三摄像头（插值）
+                cv2.putText(frame, 'INTERPOLATED', (10, 170), 
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
+            cv2.putText(frame, f'Cam {camera_index}', (250, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+        
         return frame
     
     def socket_stream_worker(self, port, camera_name, camera_index):
@@ -139,16 +158,21 @@ class AdaptiveCameraClient:
         try:
             print(f"[{camera_name}] Connecting to port {port}...")
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(10)
+            sock.settimeout(15)  # 增加超时时间
             sock.connect((self.host, port))
             print(f"[{camera_name}] ✓ Connected to port {port}")
+            
+            # 为四摄像头模式添加缓冲区优化
+            if self.camera_mode == 'quad':
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024*1024)  # 1MB接收缓冲区
             
             while self.running:
                 # 读取完整的I420帧
                 frame_data = b''
                 while len(frame_data) < self.frame_size:
                     remaining = self.frame_size - len(frame_data)
-                    chunk = sock.recv(min(remaining, 8192))
+                    chunk_size = min(remaining, 16384)  # 增加块大小
+                    chunk = sock.recv(chunk_size)
                     if not chunk:
                         print(f"[{camera_name}] Connection closed")
                         return
@@ -209,8 +233,8 @@ class AdaptiveCameraClient:
             # 添加分割线
             cv2.line(canvas, (self.width, 0), (self.width, self.height), (255, 255, 255), 2)
             
-        else:  # triple
-            # 三摄像头：2x2布局
+        elif self.camera_mode == 'triple':
+            # 三摄像头：2x2布局（左上、右上、底部中央）
             canvas_width = self.width * 2
             canvas_height = self.height * 2
             canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
@@ -232,6 +256,44 @@ class AdaptiveCameraClient:
             # 添加分割线
             cv2.line(canvas, (self.width, 0), (self.width, self.height), (255, 255, 255), 2)
             cv2.line(canvas, (0, self.height), (canvas_width, self.height), (255, 255, 255), 2)
+            
+        else:  # quad
+            # 四摄像头：2x2标准网格布局
+            canvas_width = self.width * 2
+            canvas_height = self.height * 2
+            canvas = np.zeros((canvas_height, canvas_width, 3), dtype=np.uint8)
+            
+            # 左上：左摄像头 (Cam 0)
+            if frames[0] is not None:
+                canvas[0:self.height, 0:self.width] = frames[0]
+            else:
+                self._draw_no_signal(canvas, "Left Camera\n(Cam 0)", 0, 0)
+            
+            # 右上：右摄像头 (Cam 1)
+            if frames[1] is not None:
+                canvas[0:self.height, self.width:canvas_width] = frames[1]
+            else:
+                self._draw_no_signal(canvas, "Right Camera\n(Cam 1)", self.width, 0)
+            
+            # 左下：第三摄像头 (Cam 2, 插值)
+            if frames[2] is not None:
+                canvas[self.height:canvas_height, 0:self.width] = frames[2]
+            else:
+                self._draw_no_signal(canvas, "Third Camera\n(Cam 2, Interpolated)", 0, self.height)
+            
+            # 右下：第四摄像头 (Cam 3)
+            if frames[3] is not None:
+                canvas[self.height:canvas_height, self.width:canvas_width] = frames[3]
+            else:
+                self._draw_no_signal(canvas, "Fourth Camera\n(Cam 3)", self.width, self.height)
+            
+            # 添加分割线
+            cv2.line(canvas, (self.width, 0), (self.width, canvas_height), (255, 255, 255), 2)
+            cv2.line(canvas, (0, self.height), (canvas_width, self.height), (255, 255, 255), 2)
+            
+            # 为四摄像头模式添加特殊标识
+            cv2.putText(canvas, 'QUAD SYNC', (canvas_width - 150, 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         
         # 添加整体信息
         total_frames = sum(counter[0] for counter in self.frame_counters)
@@ -239,10 +301,22 @@ class AdaptiveCameraClient:
         overall_fps = total_frames / (elapsed * len(self.camera_ports)) if elapsed > 0 else 0
         
         info_y = canvas.shape[0] - 30
-        cv2.putText(canvas, f'{self.camera_mode.capitalize()} Camera Sync - Overall FPS: {overall_fps:.1f}', 
+        mode_display = f'{self.camera_mode.capitalize()} Camera Sync'
+        if self.camera_mode == 'quad':
+            mode_display += ' (with Interpolation)'
+        
+        cv2.putText(canvas, f'{mode_display} - Overall FPS: {overall_fps:.1f}', 
                    (10, info_y), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
         return canvas
+    
+    def _draw_no_signal(self, canvas, text, start_x, start_y):
+        """绘制无信号提示"""
+        text_lines = text.split('\n')
+        y_offset = self.height // 2 - len(text_lines) * 15
+        for i, line in enumerate(text_lines):
+            cv2.putText(canvas, line, (start_x + 50, start_y + y_offset + i * 30), 
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
     
     def display_frames_separate(self):
         """分窗口显示摄像头"""
@@ -257,9 +331,16 @@ class AdaptiveCameraClient:
             # 设置窗口位置
             if self.camera_mode == 'dual':
                 cv2.moveWindow(window_name, 50 + i * (self.width + 20), 50)
-            else:  # triple
+            elif self.camera_mode == 'triple':
                 positions = [(50, 50), (50 + self.width + 20, 50), (50 + self.width//2, 50 + self.height + 50)]
                 cv2.moveWindow(window_name, positions[i][0], positions[i][1])
+            else:  # quad
+                # 2x2布局
+                row = i // 2
+                col = i % 2
+                x = 50 + col * (self.width + 20)
+                y = 50 + row * (self.height + 50)
+                cv2.moveWindow(window_name, x, y)
         
         while self.running:
             # 显示每个摄像头
@@ -287,7 +368,7 @@ class AdaptiveCameraClient:
         
         if self.camera_mode == 'dual':
             cv2.resizeWindow(window_name, self.width * 2, self.height)
-        else:  # triple
+        else:  # triple 或 quad
             cv2.resizeWindow(window_name, self.width * 2, self.height * 2)
         
         frames = [None] * len(self.camera_ports)
@@ -325,8 +406,8 @@ class AdaptiveCameraClient:
     def run_adaptive_stream(self):
         """运行自适应摄像头流"""
         print("="*80)
-        print("Adaptive Camera Sync Client")
-        print("Automatically detects dual or triple camera configuration")
+        print("Adaptive Multi-Camera Sync Client")
+        print("Automatically detects dual/triple/quad camera configuration")
         print("="*80)
         
         # 检测可用流
@@ -335,6 +416,12 @@ class AdaptiveCameraClient:
         
         print(f"Mode: {self.camera_mode.upper()} camera sync")
         print(f"Ports: {', '.join(map(str, self.camera_ports))}")
+        
+        if self.camera_mode == 'quad':
+            print("Special Features:")
+            print("  - Camera 2 uses frame interpolation")
+            print("  - Expected FPS: ~18")
+        
         print("Controls:")
         print("  - Combined view: Press 'c'")
         print("  - Separate view: Press 's'") 
@@ -366,7 +453,7 @@ class AdaptiveCameraClient:
         
         # 等待工作线程结束
         for thread in threads:
-            thread.join(timeout=1.0)
+            thread.join(timeout=2.0)
             
         cv2.destroyAllWindows()
         
@@ -377,10 +464,15 @@ class AdaptiveCameraClient:
             print(f"   Runtime: {elapsed:.1f} seconds")
             
             total_frames = 0
+            fps_values = []
             for i, counter in enumerate(self.frame_counters):
                 camera_name = self.camera_names[i]
                 fps = counter[0] / elapsed if elapsed > 0 else 0
-                print(f"   {camera_name} Camera: {counter[0]} frames ({fps:.1f} fps)")
+                fps_values.append(fps)
+                
+                # 为插值摄像头添加标识
+                interpolated_mark = " (interpolated)" if (self.camera_mode in ['triple', 'quad'] and i == 2) else ""
+                print(f"   {camera_name} Camera{interpolated_mark}: {counter[0]} frames ({fps:.1f} fps)")
                 total_frames += counter[0]
             
             # 同步质量分析
@@ -388,17 +480,40 @@ class AdaptiveCameraClient:
             print(f"   Average Sync FPS: {avg_fps:.1f}")
             
             # 帧率一致性分析
-            if len(self.frame_counters) > 1:
-                fps_values = [counter[0]/elapsed for counter in self.frame_counters]
+            if len(fps_values) > 1:
                 fps_std = np.std(fps_values)
                 print(f"   Frame Rate Consistency: {fps_std:.2f} (lower is better)")
                 
-                if self.camera_mode == 'dual' and avg_fps > 25:
-                    print("   ✓ Excellent dual camera sync performance!")
-                elif self.camera_mode == 'triple' and avg_fps > 18:
-                    print("   ✓ Good triple camera sync performance!")
+                # 性能评估
+                threshold = self.fps_thresholds.get(self.camera_mode, 15)
+                if avg_fps > threshold:
+                    print(f"   ✓ Excellent {self.camera_mode} camera sync performance!")
+                elif avg_fps > threshold * 0.8:
+                    print(f"   ✓ Good {self.camera_mode} camera sync performance!")
                 else:
-                    print("   ⚠ Sync performance could be improved")
+                    print(f"   ⚠ {self.camera_mode.capitalize()} sync performance could be improved")
+                    print(f"     Expected: >{threshold} fps, Actual: {avg_fps:.1f} fps")
+                
+                # 四摄像头特殊分析
+                if self.camera_mode == 'quad':
+                    print("   Quad Camera Analysis:")
+                    
+                    # 分析主摄像头 vs 插值摄像头性能
+                    main_cameras_fps = [fps_values[0], fps_values[1], fps_values[3]]  # 0,1,3是主摄像头
+                    interpolated_fps = fps_values[2]  # 2是插值摄像头
+                    main_avg = np.mean(main_cameras_fps)
+                    
+                    print(f"     Main Cameras (0,1,3) Avg FPS: {main_avg:.1f}")
+                    print(f"     Interpolated Camera (2) FPS: {interpolated_fps:.1f}")
+                    
+                    # 插值效果评估
+                    interpolation_ratio = interpolated_fps / main_avg if main_avg > 0 else 0
+                    if interpolation_ratio > 1.5:
+                        print("     ✓ Excellent interpolation performance!")
+                    elif interpolation_ratio > 1.0:
+                        print("     ✓ Good interpolation performance!")
+                    else:
+                        print("     ⚠ Interpolation may need optimization")
         
         return True
 
@@ -409,15 +524,15 @@ def main():
     else:
         start_port = 5010
     
-    print(f"Starting adaptive camera client from port {start_port}")
+    print(f"Starting adaptive multi-camera client from port {start_port}")
     
     client = AdaptiveCameraClient(start_port=start_port)
     success = client.run_adaptive_stream()
     
     if success:
-        print("✓ Adaptive camera client exited normally")
+        print("✓ Adaptive multi-camera client exited normally")
     else:
-        print("✗ Adaptive camera client exited with error")
+        print("✗ Adaptive multi-camera client exited with error")
         return 1
     
     return 0
