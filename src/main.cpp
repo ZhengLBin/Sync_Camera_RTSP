@@ -1,4 +1,4 @@
-﻿// main.cpp - 修复版本（输出端帧率控制）
+﻿// main.cpp - 去除插值，增加USB自动扫描 - 最终修复版本
 
 #include "../includes/multi_camera_sync.h"
 #include "../includes/tcp_streamer.h"
@@ -8,6 +8,11 @@
 #include <iomanip>
 #include <vector>
 #include <memory>
+#include <sstream>
+#include <regex>
+#include <map>
+#include <algorithm>
+#include <set>          // 修复编译错误：添加缺失的头文件
 
 // Windows内存监测
 #ifdef _WIN32
@@ -17,6 +22,9 @@
 
 // 全局退出控制标志
 std::atomic<bool> g_should_exit{ false };
+
+// 函数声明
+bool test_camera_simple(const std::string& camera_name);
 
 // 摄像头检测结果结构
 struct CameraDetectionResult {
@@ -60,80 +68,221 @@ size_t get_memory_usage_mb() {
     return 0;
 }
 
-// 简化的摄像头测试函数（统一30fps）
+// 修复版测试函数 - 支持rawvideo，去除强制mjpeg编码
 bool test_camera_simple(const std::string& camera_name) {
-    std::cout << "[DETECTION] Testing: " << camera_name << std::endl;
-
     const AVInputFormat* input_format = av_find_input_format("dshow");
     AVFormatContext* test_fmt_ctx = nullptr;
     AVDictionary* options = nullptr;
 
-    // 统一使用30fps测试
+    // 适配rawvideo的参数设置 - 不强制指定编码格式
     av_dict_set(&options, "video_size", "640x480", 0);
     av_dict_set(&options, "framerate", "30", 0);
-    av_dict_set(&options, "vcodec", "mjpeg", 0);
+    // 关键修复：不强制mjpeg编码，让设备自选最佳格式
+    // av_dict_set(&options, "vcodec", "mjpeg", 0);  // 注释掉
     av_dict_set(&options, "probesize", "32", 0);
-    av_dict_set(&options, "analyzeduration", "50000", 0);
+    av_dict_set(&options, "analyzeduration", "100000", 0);
+    av_dict_set(&options, "rtbufsize", "16777216", 0);
+    av_dict_set(&options, "buffer_size", "4194304", 0);
+    av_dict_set(&options, "fflags", "nobuffer", 0);
+    av_dict_set(&options, "thread_queue_size", "8", 0);
+
+    std::cout << "[TEST] Testing: " << camera_name << std::endl;
 
     int ret = avformat_open_input(&test_fmt_ctx, camera_name.c_str(), input_format, &options);
     av_dict_free(&options);
 
     if (ret == 0) {
-        std::cout << "[DETECTION] ✓ Found: " << camera_name << std::endl;
+        std::cout << "[TEST] [OK] Successfully opened: " << camera_name << std::endl;
+
+        if (avformat_find_stream_info(test_fmt_ctx, nullptr) >= 0) {
+            for (unsigned int i = 0; i < test_fmt_ctx->nb_streams; i++) {
+                if (test_fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
+                    AVCodecParameters* codecpar = test_fmt_ctx->streams[i]->codecpar;
+                    std::cout << "[TEST] Video stream: " << codecpar->width << "x" << codecpar->height
+                        << ", codec: " << avcodec_get_name(codecpar->codec_id) << std::endl;
+                    break;
+                }
+            }
+        }
+
         avformat_close_input(&test_fmt_ctx);
         return true;
     }
     else {
-        std::cout << "[DETECTION] ✗ Not available: " << camera_name << std::endl;
+        char error_buf[AV_ERROR_MAX_STRING_SIZE];
+        av_strerror(ret, error_buf, sizeof(error_buf));
+        std::cout << "[TEST] [FAIL] " << camera_name << " - " << error_buf << std::endl;
         return false;
     }
 }
 
-// 检测可用摄像头（简化版）
+// 优化的USB摄像头扫描函数 - 避免设备冲突
+std::vector<std::string> scan_usb_cameras() {
+    std::vector<std::string> detected_cameras;
+
+    std::cout << "[USB_SCAN] Scanning for USB cameras using FFmpeg device enumeration..." << std::endl;
+
+    AVDeviceInfoList* device_list = nullptr;
+    const AVInputFormat* input_format = av_find_input_format("dshow");
+
+    if (!input_format) {
+        std::cerr << "[USB_SCAN] DirectShow input format not found!" << std::endl;
+        return detected_cameras;
+    }
+
+    int ret = avdevice_list_input_sources(input_format, nullptr, nullptr, &device_list);
+    if (ret < 0 || !device_list) {
+        std::cout << "[USB_SCAN] FFmpeg device enumeration failed" << std::endl;
+        return detected_cameras;
+    }
+
+    std::cout << "[USB_SCAN] Found " << device_list->nb_devices << " DirectShow devices:" << std::endl;
+
+    // 收集所有视频设备的简单名称，避免重复
+    std::set<std::string> unique_descriptions;
+    std::map<std::string, std::string> description_to_alt_name;
+
+    for (int i = 0; i < device_list->nb_devices; ++i) {
+        AVDeviceInfo* device = device_list->devices[i];
+        if (!device || !device->device_name) continue;
+
+        std::string device_name = device->device_name;
+        std::string device_description = device->device_description ? device->device_description : "";
+
+        std::cout << "[USB_SCAN] Device " << i << ": " << device_description
+            << " (Name: " << device_name << ")" << std::endl;
+
+        // 跳过音频设备
+        if (device_description.find("(audio)") != std::string::npos ||
+            device_description.find("麦克风") != std::string::npos ||
+            device_description.find("Microphone") != std::string::npos) {
+            std::cout << "[USB_SCAN] Skipping audio device: " << device_description << std::endl;
+            continue;
+        }
+
+        // 收集唯一的设备描述
+        unique_descriptions.insert(device_description);
+
+        // 如果是Alternative name（包含device_pnp），记录映射关系
+        if (device_name.find("device_pnp") != std::string::npos) {
+            description_to_alt_name[device_description] = device_name;
+        }
+    }
+
+    avdevice_free_list_devices(&device_list);
+
+    // 策略：优先使用简单名称，如果失败再用Alternative name
+    for (const auto& description : unique_descriptions) {
+        std::string simple_device = "video=" + description;
+
+        std::cout << "[USB_SCAN] Testing simple name: " << simple_device << std::endl;
+
+        if (test_camera_simple(simple_device)) {
+            detected_cameras.push_back(simple_device);
+            std::cout << "[USB_SCAN] [OK] Added: " << simple_device << std::endl;
+        }
+        else {
+            // 如果简单名称失败，尝试Alternative name
+            auto alt_it = description_to_alt_name.find(description);
+            if (alt_it != description_to_alt_name.end()) {
+                std::string alt_device = "video=" + alt_it->second;
+                std::cout << "[USB_SCAN] Simple name failed, trying alternative: " << alt_device << std::endl;
+
+                if (test_camera_simple(alt_device)) {
+                    detected_cameras.push_back(alt_device);
+                    std::cout << "[USB_SCAN] [OK] Added alternative: " << alt_device << std::endl;
+                }
+                else {
+                    std::cout << "[USB_SCAN] [FAIL] Both simple and alternative names failed for: " << description << std::endl;
+                }
+            }
+            else {
+                std::cout << "[USB_SCAN] [FAIL] No alternative available for: " << description << std::endl;
+            }
+        }
+    }
+
+    std::cout << "[USB_SCAN] Total unique video cameras detected: " << detected_cameras.size() << std::endl;
+
+    for (size_t i = 0; i < detected_cameras.size(); ++i) {
+        std::cout << "[USB_SCAN] Camera " << i << ": " << detected_cameras[i] << std::endl;
+    }
+
+    return detected_cameras;
+}
+
+// 修复版检测函数 - 使用确认工作的设备配置
 CameraDetectionResult detect_available_cameras() {
     CameraDetectionResult result;
 
-    std::cout << "[DETECTION] Detecting available cameras..." << std::endl;
+    std::cout << "[DETECTION] Using confirmed working camera configuration..." << std::endl;
 
-    // 预定义的摄像头列表（按优先级排序）
-    std::vector<std::string> candidate_cameras = {
-        "video=USB Camera",         // 主摄像头 (高优先级)
-        "video=CyberTrack H3",      // 辅摄像头 (高优先级)
-        "video=USB 2.0 Camera",     // 第三摄像头 (低优先级，需要插值)
-        "video=720P USB Camera"     // 第四摄像头 (高优先级，新增)
+    // 关键修复：基于测试结果，直接指定4个确认工作的摄像头
+    std::vector<std::string> confirmed_cameras = {
+        "video=USB Camera",                    // mjpeg编码
+        "video=720P USB Camera",               // rawvideo编码  
+        "video=1080P USB Camera",              // rawvideo编码（第一个）
+        "video=@device_pnp_\\\\?\\usb#vid_2bdf&pid_0289&mi_00#6&294b298c&0&0000#{65e8773d-8f56-11d0-a3b9-00a0c9223196}\\global"  // 第二个1080P（Alternative name）
     };
 
-    // 统一测试所有摄像头
-    for (const auto& camera_name : candidate_cameras) {
-        if (test_camera_simple(camera_name)) {
-            result.available_cameras.push_back(camera_name);
+    // 验证这4个设备是否可用
+    for (const auto& device : confirmed_cameras) {
+        if (test_camera_simple(device)) {
+            result.available_cameras.push_back(device);
+            std::cout << "[DETECTION] Confirmed working: " << device << std::endl;
+        }
+        else {
+            std::cout << "[DETECTION] Warning: Previously working device failed: " << device << std::endl;
+        }
+    }
+
+    // 如果确认的设备不够，尝试自动扫描作为备用
+    if (result.available_cameras.size() < 4) {
+        std::cout << "[DETECTION] Confirmed devices insufficient, trying auto-scan..." << std::endl;
+        auto auto_detected = scan_usb_cameras();
+
+        // 添加扫描到但不在确认列表中的设备
+        for (const auto& device : auto_detected) {
+            bool already_added = false;
+            for (const auto& existing : result.available_cameras) {
+                if (existing == device) {
+                    already_added = true;
+                    break;
+                }
+            }
+
+            if (!already_added && result.available_cameras.size() < 4) {
+                result.available_cameras.push_back(device);
+                std::cout << "[DETECTION] Added from auto-scan: " << device << std::endl;
+            }
         }
     }
 
     // 决定工作模式
     size_t camera_count = result.available_cameras.size();
 
+    std::cout << "[DETECTION] Total working cameras found: " << camera_count << std::endl;
+    for (size_t i = 0; i < camera_count; ++i) {
+        std::cout << "[DETECTION] Camera " << i << ": " << result.available_cameras[i] << std::endl;
+    }
+
     if (camera_count >= 4) {
         result.mode = "quad";
-        result.expected_fps = 18;  // 四摄像头模式输出18fps
-        std::cout << "[DETECTION] Mode: Quad Camera Sync (4 cameras detected)" << std::endl;
-        std::cout << "[DETECTION] Camera 2 (USB 2.0 Camera) will use interpolation" << std::endl;
-        std::cout << "[DETECTION] Cameras 0,1,3 are high-quality 30fps cameras" << std::endl;
+        result.expected_fps = 25;
+        result.available_cameras.resize(4);  // 只使用前4个
+        std::cout << "[DETECTION] Mode: Quad Camera Sync (4 cameras)" << std::endl;
     }
     else if (camera_count >= 3) {
         result.mode = "triple";
-        result.expected_fps = 20;  // 三摄像头模式输出20fps
-        std::cout << "[DETECTION] Mode: Triple Camera Sync (3 cameras detected)" << std::endl;
-        std::cout << "[DETECTION] Camera 2 (USB 2.0 Camera) will use interpolation" << std::endl;
-        // 只使用前三个摄像头
+        result.expected_fps = 28;
         result.available_cameras.resize(3);
+        std::cout << "[DETECTION] Mode: Triple Camera Sync (3 cameras)" << std::endl;
     }
     else if (camera_count >= 2) {
         result.mode = "dual";
-        result.expected_fps = 30;  // 双摄像头模式输出30fps
-        std::cout << "[DETECTION] Mode: Dual Camera Sync (2 cameras detected)" << std::endl;
-        // 只使用前两个摄像头
+        result.expected_fps = 30;
         result.available_cameras.resize(2);
+        std::cout << "[DETECTION] Mode: Dual Camera Sync (2 cameras)" << std::endl;
     }
     else {
         result.mode = "none";
@@ -144,7 +293,7 @@ CameraDetectionResult detect_available_cameras() {
     return result;
 }
 
-// 创建多摄像头捕获器
+// 创建多摄像头捕获器（去除插值相关代码）
 std::unique_ptr<MultiCameraCapture> create_camera_capture(const CameraDetectionResult& detection) {
     try {
         if (detection.mode == "dual") {
@@ -152,16 +301,12 @@ std::unique_ptr<MultiCameraCapture> create_camera_capture(const CameraDetectionR
             return CameraCaptureFactory::create_dual_camera(detection.available_cameras);
         }
         else if (detection.mode == "triple") {
-            std::cout << "[CAMERA] Creating triple camera capture with interpolation..." << std::endl;
-            // 确保第三个摄像头（索引2，即USB 2.0 Camera）使用插值
-            return CameraCaptureFactory::create_triple_camera_with_interpolation(
-                detection.available_cameras, 2);
+            std::cout << "[CAMERA] Creating triple camera capture..." << std::endl;
+            return CameraCaptureFactory::create_triple_camera(detection.available_cameras);
         }
         else if (detection.mode == "quad") {
-            std::cout << "[CAMERA] Creating quad camera capture with interpolation..." << std::endl;
-            // 第三个摄像头（索引2，即USB 2.0 Camera）使用插值
-            return CameraCaptureFactory::create_quad_camera_with_interpolation(
-                detection.available_cameras, 2);
+            std::cout << "[CAMERA] Creating quad camera capture..." << std::endl;
+            return CameraCaptureFactory::create_quad_camera(detection.available_cameras);
         }
         else {
             std::cerr << "[ERROR] Unsupported camera mode: " << detection.mode << std::endl;
@@ -183,7 +328,7 @@ std::vector<std::unique_ptr<TCPStreamer>> create_streamers(const CameraDetection
         "/tmp/camera_left",
         "/tmp/camera_right",
         "/tmp/camera_third",
-        "/tmp/camera_fourth"  // 新增第四个流
+        "/tmp/camera_fourth"
     };
 
     for (size_t i = 0; i < camera_count; ++i) {
@@ -210,7 +355,7 @@ int main() {
     // 初始化libavdevice
     avdevice_register_all();
 
-    std::cout << "=== Adaptive Multi-Camera Sync System ===" << std::endl;
+    std::cout << "=== Adaptive Multi-Camera Sync System (No Interpolation) ===" << std::endl;
 
     // 检测可用摄像头
     auto detection = detect_available_cameras();
@@ -248,10 +393,7 @@ int main() {
     std::atomic<bool> cameras_running{ false };
     bool should_run_cameras = true;
 
-    // 主要流传输线程（添加输出帧率控制）
-    // 在 main.cpp 中替换主要流传输线程部分
-    // 主要流传输线程（优化输出帧率控制）
-    // 在 main.cpp 中替换主要流传输线程 - 修复版本
+    // 主要流传输线程（简化的输出帧率控制）
     std::thread streaming_thread([&]() {
         uint64_t frame_groups_sent = 0;
         uint64_t sync_success = 0;
@@ -260,13 +402,12 @@ int main() {
         auto last_stats_time = start_time;
         auto last_camera_check = start_time;
 
-        // 【关键修复1】简化输出帧率控制，移除过度复杂的逻辑
+        // 简化输出帧率控制
         auto last_output_time = std::chrono::steady_clock::now();
-        const auto target_frame_interval = std::chrono::milliseconds(1000 / detection.expected_fps);  // 使用毫秒，更宽松
+        const auto target_frame_interval = std::chrono::milliseconds(1000 / detection.expected_fps);
 
-        // 【关键修复2】移除帧率窗口限制，专注于稳定输出
         int consecutive_failures = 0;
-        const int MAX_CONSECUTIVE_FAILURES = 50;  // 增加容错
+        const int MAX_CONSECUTIVE_FAILURES = 50;
 
         while (!g_should_exit.load()) {
             try {
@@ -274,7 +415,7 @@ int main() {
                 bool cams_init = cameras_initialized.load();
                 bool cams_running = cameras_running.load();
 
-                // 摄像头状态检查（保持原有逻辑）
+                // 摄像头状态检查
                 if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_camera_check).count() >= 2) {
 
                     if (should_run_cameras && !cams_init) {
@@ -285,7 +426,7 @@ int main() {
                             cameras_initialized = true;
                             cameras_running = true;
                             frame_groups_sent = 0;
-                            consecutive_failures = 0;  // 重置失败计数
+                            consecutive_failures = 0;
 
                             std::cout << "[CAMERA] " << detection.mode << " cameras started successfully ("
                                 << camera_capture->get_camera_count() << " cameras, ~"
@@ -307,7 +448,7 @@ int main() {
                     last_camera_check = current_time;
                 }
 
-                // 【关键修复3】处理帧数据 - 简化逻辑，专注于获取和发送帧
+                // 处理帧数据
                 if (cams_running && camera_capture) {
                     auto frames = camera_capture->get_sync_yuv420p_frames();
                     size_t expected_frame_count = camera_capture->get_camera_count();
@@ -315,7 +456,7 @@ int main() {
                     if (frames.size() == expected_frame_count &&
                         std::all_of(frames.begin(), frames.end(), [](AVFrame* f) { return f != nullptr; })) {
 
-                        // 【修复3a】移除复杂的帧率控制，使用简单的时间间隔
+                        // 简单的时间间隔控制
                         auto time_since_last_output = current_time - last_output_time;
 
                         if (time_since_last_output >= target_frame_interval) {
@@ -323,7 +464,7 @@ int main() {
 
                             // 设置PTS
                             for (size_t i = 0; i < frames.size(); ++i) {
-                                frames[i]->pts = frame_groups_sent;
+                                frames[i]->pts = static_cast<int64_t>(frame_groups_sent);
                             }
 
                             // 发送到所有流传输器
@@ -336,7 +477,7 @@ int main() {
                             }
 
                             frame_groups_sent++;
-                            consecutive_failures = 0;  // 重置连续失败
+                            consecutive_failures = 0;
 
                             if (all_success) {
                                 sync_success++;
@@ -345,17 +486,11 @@ int main() {
                                 sync_fail++;
                             }
 
-                            // 【修复3b】添加发送成功的日志
-                            if (frame_groups_sent % 30 == 0) {
-                                std::cout << "[OUTPUT] Successfully sent frame group " << frame_groups_sent << std::endl;
-                            }
-
                             // 释放帧
                             for (auto* frame : frames) {
                                 camera_capture->release_frame(&frame);
                             }
 
-                            // 短暂睡眠，让其他线程工作
                             std::this_thread::sleep_for(std::chrono::milliseconds(1));
                         }
                         else {
@@ -367,7 +502,7 @@ int main() {
                         }
                     }
                     else {
-                        // 【修复3c】改善错误处理
+                        // 错误处理
                         consecutive_failures++;
 
                         // 释放任何获取到的帧
@@ -375,7 +510,7 @@ int main() {
                             if (frame) camera_capture->release_frame(&frame);
                         }
 
-                        // 如果连续失败太多，检查是否需要重置
+                        // 如果连续失败太多，检查系统状态
                         if (consecutive_failures > MAX_CONSECUTIVE_FAILURES) {
                             std::cout << "[WARNING] Too many consecutive failures (" << consecutive_failures
                                 << "), checking system status..." << std::endl;
@@ -390,9 +525,9 @@ int main() {
                                 std::cout << stats.raw_queue_sizes[i];
                                 if (i < stats.raw_queue_sizes.size() - 1) std::cout << "/";
                             }
-                            std::cout << ", Interpolated: " << stats.interpolated_queue_size << std::endl;
+                            std::cout << std::endl;
 
-                            consecutive_failures = 0;  // 重置计数
+                            consecutive_failures = 0;
                         }
 
                         sync_fail++;
@@ -403,7 +538,7 @@ int main() {
                     std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 }
 
-                // 【修复4】每30秒打印详细状态统计
+                // 每30秒打印详细状态统计
                 if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_stats_time).count() >= 30) {
                     auto total_elapsed = std::chrono::duration_cast<std::chrono::seconds>(current_time - start_time).count();
                     double fps = total_elapsed > 0 ? static_cast<double>(frame_groups_sent) / total_elapsed : 0;
@@ -416,7 +551,7 @@ int main() {
                         << ", Success Rate: " << std::setprecision(1) << current_success_rate << "%"
                         << ", Memory: " << get_memory_usage_mb() << "MB" << std::endl;
 
-                    // 【修复4a】详细的队列状态报告
+                    // 详细的队列状态报告
                     if (camera_capture && cameras_running.load()) {
                         auto stats = camera_capture->get_memory_stats();
                         size_t sync_queue_size = camera_capture->get_sync_queue_size();
@@ -429,15 +564,10 @@ int main() {
                             std::cout << stats.raw_queue_sizes[i];
                             if (i < stats.raw_queue_sizes.size() - 1) std::cout << "/";
                         }
-                        std::cout << ", Interpolated: " << stats.interpolated_queue_size << std::endl;
-
-                        // 【修复4b】如果同步队列为空但同步线程工作正常，发出警告
-                        if (sync_queue_size == 0 && stats.raw_queue_sizes[0] > 0 && stats.interpolated_queue_size > 0) {
-                            std::cout << "[WARNING] Sync queue empty but raw queues have data. Possible sync timing issue." << std::endl;
-                        }
+                        std::cout << std::endl;
                     }
 
-                    // 【修复4c】TCP流状态检查
+                    // TCP流状态检查
                     for (size_t i = 0; i < streamers.size(); ++i) {
                         std::cout << "[TCP:" << streamers[i]->get_port() << "] Status check..." << std::endl;
                     }
@@ -461,22 +591,28 @@ int main() {
         std::cout << "[MAIN] Streaming thread stopped. Final stats:" << std::endl;
         std::cout << "[MAIN] Total groups sent: " << frame_groups_sent << std::endl;
         std::cout << "[MAIN] Success/Fail: " << sync_success << "/" << sync_fail << std::endl;
-    });
-        
-        // 显示连接信息
+        });
+
+    // 显示连接信息
     std::cout << "\n=== TCP Stream Info ===" << std::endl;
     std::cout << "Mode: " << detection.mode << " camera sync" << std::endl;
     std::cout << "Expected FPS: ~" << detection.expected_fps << std::endl;
+    std::cout << "Detected Cameras:" << std::endl;
 
+    for (size_t i = 0; i < detection.available_cameras.size(); ++i) {
+        std::cout << "  Camera " << i << ": " << detection.available_cameras[i] << std::endl;
+    }
+
+    std::cout << "\nTCP Ports:" << std::endl;
     for (size_t i = 0; i < streamers.size(); ++i) {
-        std::vector<std::string> camera_labels = { "Left", "Right", "Third" };
-        std::cout << camera_labels[i] << " camera port: " << streamers[i]->get_port() << std::endl;
+        std::vector<std::string> camera_labels = { "Left", "Right", "Third", "Fourth" };
+        std::cout << "  " << camera_labels[i] << " camera port: " << streamers[i]->get_port() << std::endl;
     }
 
     std::cout << "\n=== Python Consumer Example ===" << std::endl;
     std::cout << "import cv2" << std::endl;
     for (size_t i = 0; i < streamers.size(); ++i) {
-        std::vector<std::string> var_names = { "cap_left", "cap_right", "cap_third" };
+        std::vector<std::string> var_names = { "cap_left", "cap_right", "cap_third", "cap_fourth" };
         std::cout << var_names[i] << " = cv2.VideoCapture('tcpclientsrc host=127.0.0.1 port="
             << streamers[i]->get_port() << " ! videoconvert ! appsink', cv2.CAP_GSTREAMER)" << std::endl;
     }
