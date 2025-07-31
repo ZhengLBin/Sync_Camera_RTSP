@@ -1,18 +1,19 @@
-﻿// multi_camera_sync.h - 去除插值功能的优化版本 - 最终修复版本
+﻿// multi_camera_sync.h - 简化版本（无插值系统）
 #pragma once
 
-#include <vector>
-#include <string>
 #include <memory>
-#include <thread>
-#include <mutex>
-#include <atomic>
+#include <vector>
 #include <deque>
+#include <mutex>
+#include <thread>
+#include <atomic>
 #include <chrono>
+#include <string>
+#include <functional>
 
 extern "C" {
-#include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
 #include <libavdevice/avdevice.h>
 #include <libswscale/swscale.h>
 #include <libavutil/imgutils.h>
@@ -20,111 +21,65 @@ extern "C" {
 }
 
 //==============================================================================
-// 核心数据结构
+// 配置结构体
 //==============================================================================
-
-// 时间戳帧结构
-struct TimestampedFrame {
-    AVFrame* frame;
-    int64_t timestamp_us;
-
-    TimestampedFrame() : frame(nullptr), timestamp_us(0) {}
-    TimestampedFrame(AVFrame* f, int64_t ts) : frame(f), timestamp_us(ts) {}
-};
-
-// 同步配置
 struct SyncConfig {
     int target_fps = 30;
     size_t max_queue_size = 15;
     size_t max_sync_queue_size = 5;
-    int64_t sync_threshold_us = 300000;  // 300ms同步阈值
+    int64_t sync_threshold_us = 400000;
 
-    SyncConfig() = default;
+    // 新增优化参数
+    size_t frame_drop_threshold = 20;
+    size_t emergency_cleanup_threshold = 40;
+    int balance_interval_ms = 50;
+    bool enable_smart_sync = true;
+    bool enable_aggressive_cleanup = true;
 };
 
-// 摄像头统计信息
+//==============================================================================
+// 统计结构体
+//==============================================================================
 struct CameraStats {
     size_t frames_captured = 0;
     size_t frames_dropped_queue = 0;
     size_t frames_dropped_memory = 0;
+    size_t frames_skipped = 0;
     size_t decode_failures = 0;
     size_t read_failures = 0;
-    size_t frames_skipped = 0;
-
-    CameraStats() = default;
 };
 
-// 同步统计信息
 struct SyncStats {
     size_t sync_attempts = 0;
     size_t sync_success = 0;
     size_t sync_failures_no_frames = 0;
     size_t sync_failures_timestamp = 0;
     size_t memory_cleanups = 0;
-
-    SyncStats() = default;
 };
 
-// 内存统计信息
 struct MemoryStats {
     size_t allocated_frames = 0;
     size_t freed_frames = 0;
     size_t active_frames = 0;
     std::vector<size_t> raw_queue_sizes;
     size_t sync_queue_size = 0;
-    size_t interpolated_queue_size = 0;  // 保留字段，但不再使用
-
-    MemoryStats() = default;
+    size_t interpolated_queue_size = 0;
 };
 
-// 摄像头数据结构
-struct CameraData {
-    int index = -1;
-    std::string device_path;
+//==============================================================================
+// 时间戳帧结构体
+//==============================================================================
+struct TimestampedFrame {
+    AVFrame* frame;
+    int64_t timestamp_us;
 
-    AVFormatContext* fmt_ctx = nullptr;
-    AVCodecContext* codec_ctx = nullptr;
-    int video_stream_idx = -1;
-
-    AVFrame* frame = nullptr;
-    AVFrame* yuv_frame = nullptr;
-    uint8_t* yuv_buffer = nullptr;
-
-    SwsContext* sws_ctx_yuv = nullptr;
-
-    CameraData() = default;
-    ~CameraData() = default;
-
-    // 禁用拷贝构造和赋值
-    CameraData(const CameraData&) = delete;
-    CameraData& operator=(const CameraData&) = delete;
-
-    // 允许移动构造和赋值
-    CameraData(CameraData&& other) noexcept {
-        *this = std::move(other);
-    }
-
-    CameraData& operator=(CameraData&& other) noexcept {
+    TimestampedFrame() : frame(nullptr), timestamp_us(0) {}
+    TimestampedFrame(AVFrame* f, int64_t ts) : frame(f), timestamp_us(ts) {}
+    TimestampedFrame(const TimestampedFrame& other) : frame(other.frame), timestamp_us(other.timestamp_us) {}
+    TimestampedFrame& operator=(const TimestampedFrame& other) {
         if (this != &other) {
-            index = other.index;
-            device_path = std::move(other.device_path);
-            fmt_ctx = other.fmt_ctx;
-            codec_ctx = other.codec_ctx;
-            video_stream_idx = other.video_stream_idx;
             frame = other.frame;
-            yuv_frame = other.yuv_frame;
-            yuv_buffer = other.yuv_buffer;
-            sws_ctx_yuv = other.sws_ctx_yuv;
-
-            // 重置源对象
-            other.index = -1;
-            other.fmt_ctx = nullptr;
-            other.codec_ctx = nullptr;
-            other.video_stream_idx = -1;
-            other.frame = nullptr;
-            other.yuv_frame = nullptr;
-            other.yuv_buffer = nullptr;
-            other.sws_ctx_yuv = nullptr;
+            timestamp_us = other.timestamp_us;
         }
         return *this;
     }
@@ -136,7 +91,6 @@ struct CameraData {
 class StatsManager {
 public:
     explicit StatsManager(size_t camera_count);
-    ~StatsManager() = default;
 
     void update_camera_stats(int camera_id, const std::string& event, size_t count = 1);
     void update_sync_stats(const std::string& event, size_t count = 1);
@@ -148,7 +102,7 @@ private:
     SyncStats sync_stats_;
     std::chrono::steady_clock::time_point start_time_;
     std::chrono::steady_clock::time_point last_report_time_;
-    mutable std::mutex stats_mutex_;
+    std::mutex stats_mutex_;
 };
 
 //==============================================================================
@@ -157,7 +111,6 @@ private:
 class PerformanceOptimizer {
 public:
     PerformanceOptimizer();
-    ~PerformanceOptimizer() = default;
 
     void update_sync_stats(bool success);
     bool should_skip_frame(size_t camera_index, size_t queue_size);
@@ -186,7 +139,6 @@ public:
         const SyncConfig& config) = 0;
 };
 
-// 时间戳同步策略实现
 class TimestampSyncStrategy : public SyncStrategy {
 public:
     std::vector<AVFrame*> find_sync_frames(
@@ -195,46 +147,68 @@ public:
 };
 
 //==============================================================================
-// 多摄像头捕获器主类
+// 摄像头信息结构体
+//==============================================================================
+struct CameraInfo {
+    int index = -1;
+    std::string device_path;
+
+    AVFormatContext* fmt_ctx = nullptr;
+    AVCodecContext* codec_ctx = nullptr;
+    int video_stream_idx = -1;
+
+    AVFrame* frame = nullptr;
+    AVFrame* yuv_frame = nullptr;
+    uint8_t* yuv_buffer = nullptr;
+
+    SwsContext* sws_ctx_yuv = nullptr;
+};
+
+struct InterpolationStats {
+    std::vector<size_t> original_frames;
+    std::vector<size_t> interpolated_frames;
+    std::vector<double> interpolation_rates;
+    std::vector<size_t> current_queue_sizes;
+    size_t total_interpolations = 0;
+};
+
+//==============================================================================
+// 多摄像头捕获器
 //==============================================================================
 class MultiCameraCapture {
 public:
     MultiCameraCapture();
     ~MultiCameraCapture();
 
-    // 禁用拷贝构造和赋值
-    MultiCameraCapture(const MultiCameraCapture&) = delete;
-    MultiCameraCapture& operator=(const MultiCameraCapture&) = delete;
-
-    // 初始化和控制方法
-    bool init(const std::vector<std::string>& device_paths, const SyncConfig& config = SyncConfig{});
+    // 基础接口
+    bool init(const std::vector<std::string>& device_paths, const SyncConfig& config);
     void start();
     void stop();
-    void pause_capture();
-    void resume_capture();
 
-    // 配置更新
-    void update_config(const SyncConfig& config);
-    void set_sync_strategy(std::unique_ptr<SyncStrategy> strategy);
-
-    // 帧获取方法
+    // 帧获取接口
     std::vector<AVFrame*> get_sync_yuv420p_frames();
     void release_frame(AVFrame** frame);
 
-    // 状态查询方法
-    size_t get_camera_count() const { return camera_count_; }
-    bool is_running() const { return running_.load(); }
-    bool is_initialized() const { return initialized_; }
+    // 配置和策略
+    void set_sync_strategy(std::unique_ptr<SyncStrategy> strategy);
+    void update_config(const SyncConfig& config);
 
-    // 内存和队列管理
-    MemoryStats get_memory_stats() const;
+    // 状态查询
+    size_t get_camera_count() const;
     size_t get_sync_queue_size() const;
+    MemoryStats get_memory_stats() const;
+
+    // 控制接口
+    void pause_capture();
+    void resume_capture();
     size_t emergency_memory_cleanup();
-    size_t clear_queue(int camera_index, size_t max_to_clear = SIZE_MAX);
-    size_t balance_queues();
+
+    // 插值接口（兼容性保留，空实现）
+    void enable_interpolation_for_camera(int camera_index, bool enable = true);
+    InterpolationStats get_interpolation_stats() const;
 
 private:
-    // 初始化和清理方法
+    // 初始化和清理
     bool init_camera(int index, const std::string& device_path);
     void cleanup_camera(int index);
     void full_reset();
@@ -243,19 +217,21 @@ private:
     void capture_thread(int camera_index);
     void sync_loop();
 
-    // 同步相关方法
-    bool check_sync_conditions(std::vector<AVFrame*>& sync_frames);
+    // 同步相关
     void add_to_sync_queue(const std::vector<AVFrame*>& frames);
-    void smart_frame_dropping();
-    void manage_queues();
+
+    // 队列管理
+    size_t force_clear_all_queues();
 
     // 内存管理
     AVFrame* clone_frame(const AVFrame* src) const;
     void free_cloned_frame(AVFrame** frame);
-    size_t force_clear_all_queues();
+
+    // 插值相关（空实现，兼容性保留）
+    void init_interpolation_system();
 
     // 成员变量
-    std::vector<CameraData> cameras_;
+    std::vector<CameraInfo> cameras_;
     std::vector<std::deque<TimestampedFrame>> frame_queues_;
     std::deque<std::vector<AVFrame*>> synced_frame_queue_;
 
@@ -263,6 +239,7 @@ private:
     std::thread sync_thread_;
 
     mutable std::mutex queue_mutex_;
+
     std::atomic<bool> running_{ false };
     std::atomic<bool> capture_active_{ false };
     bool initialized_ = false;
@@ -270,12 +247,14 @@ private:
     size_t camera_count_ = 0;
     SyncConfig config_;
 
+    // 管理器和优化器
     std::unique_ptr<SyncStrategy> sync_strategy_;
     std::unique_ptr<StatsManager> stats_manager_;
+    std::unique_ptr<PerformanceOptimizer> optimizer_;
 };
 
 //==============================================================================
-// 工厂函数命名空间
+// 工厂函数
 //==============================================================================
 namespace CameraCaptureFactory {
     std::unique_ptr<MultiCameraCapture> create_dual_camera(
@@ -287,10 +266,3 @@ namespace CameraCaptureFactory {
     std::unique_ptr<MultiCameraCapture> create_quad_camera(
         const std::vector<std::string>& device_paths);
 }
-
-//==============================================================================
-// 全局统计变量声明
-//==============================================================================
-extern std::atomic<size_t> g_total_frames_allocated;
-extern std::atomic<size_t> g_total_frames_freed;
-extern std::atomic<size_t> g_active_frame_count;
