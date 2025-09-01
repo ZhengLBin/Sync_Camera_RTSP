@@ -25,9 +25,13 @@ extern "C" {
 //==============================================================================
 struct SyncConfig {
     int target_fps = 30;
-    size_t max_queue_size = 15;
-    size_t max_sync_queue_size = 5;
+    size_t max_queue_size = 16;
+    size_t max_sync_queue_size = 8;
     int64_t sync_threshold_us = 400000;
+
+    int64_t timestamp_tolerance_us = 80000; // 0 表示按 expected_fps 自动计算
+    int64_t max_queue_age_us = 1000000;  // 0.5s：清理过期帧
+    double expected_fps = 20.0;
 
     // 新增优化参数
     size_t frame_drop_threshold = 20;

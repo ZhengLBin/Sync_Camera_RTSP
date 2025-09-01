@@ -91,8 +91,6 @@ bool TCPStreamer::init(int width, int height, int fps) {
     height_ = height;
     fps_ = fps;
 
-    std::cout << "[TCP] Initializing Raw I420 TCP streamer (" << width << "x" << height
-        << "@" << fps << "fps) on port " << port_ << std::endl;
 
     if (!create_pipeline()) {
         std::cerr << "[ERROR] Failed to create GStreamer pipeline" << std::endl;
@@ -115,8 +113,6 @@ bool TCPStreamer::init(int width, int height, int fps) {
     print_pipeline_state();
     debug_caps_info();
 
-    std::cout << "[TCP] Raw I420 TCP streamer started: " << tcp_url_ << std::endl;
-
     return true;
 }
 
@@ -132,8 +128,6 @@ bool TCPStreamer::create_pipeline() {
         << "do-timestamp=true ! "  // 重新启用时间戳，确保帧率稳定
         << "tcpserversink host=127.0.0.1 port=" << port_
         << " sync=false";
-
-    std::cout << "[TCP] Final I420 Pipeline: " << pipeline_str.str() << std::endl;
 
     GError* error = nullptr;
     pipeline_ = gst_parse_launch(pipeline_str.str().c_str(), &error);
@@ -348,9 +342,6 @@ void TCPStreamer::push_frame_loop() {
         auto current_time = std::chrono::steady_clock::now();
 
         if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_stats_time).count() >= 120) {
-            std::cout << "[TCP:" << port_ << "] Pushed: " << push_count
-                << ", Failed: " << failed_push_count
-                << ", Queue: " << queue_size << "/" << MAX_QUEUE_SIZE << std::endl;
             last_stats_time = current_time;
         }
 
@@ -422,15 +413,6 @@ void TCPStreamer::print_pipeline_state() {
     GstState pending;
     GstStateChangeReturn ret = gst_element_get_state(pipeline_, &state, &pending, 0);
 
-    std::cout << "[TCP:" << port_ << "] Pipeline state: ";
-    switch (state) {
-    case GST_STATE_NULL: std::cout << "NULL"; break;
-    case GST_STATE_READY: std::cout << "READY"; break;
-    case GST_STATE_PAUSED: std::cout << "PAUSED"; break;
-    case GST_STATE_PLAYING: std::cout << "PLAYING"; break;
-    default: std::cout << "UNKNOWN"; break;
-    }
-    std::cout << std::endl;
 }
 
 void TCPStreamer::debug_caps_info() {
@@ -440,7 +422,7 @@ void TCPStreamer::debug_caps_info() {
     g_object_get(G_OBJECT(appsrc_), "caps", &caps, nullptr);
     if (caps) {
         gchar* caps_str = gst_caps_to_string(caps);
-        std::cout << "[TCP:" << port_ << "] Appsrc caps: " << caps_str << std::endl;
+
         g_free(caps_str);
         gst_caps_unref(caps);
     }

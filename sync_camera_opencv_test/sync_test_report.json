@@ -1,0 +1,65 @@
+{
+  "test_config": {
+    "cameras": 3,
+    "test_duration": 30,
+    "sync_window_ms": 50.0
+  },
+  "receiver_stats": {
+    "0": {
+      "total_bytes": 292147200,
+      "total_frames": 634,
+      "dropped_frames": 0,
+      "connection_errors": 1
+    },
+    "1": {
+      "total_bytes": 292147200,
+      "total_frames": 634,
+      "dropped_frames": 0,
+      "connection_errors": 1
+    },
+    "2": {
+      "total_bytes": 292147200,
+      "total_frames": 634,
+      "dropped_frames": 0,
+      "connection_errors": 1
+    }
+  },
+  "sync_groups_count": 411,
+  "timestamp_sync": {
+    "total_sync_groups": 411,
+    "avg_timestamp_diff_ms": 4.047060824948796,
+    "max_timestamp_diff_ms": 10.480403900146484,
+    "min_timestamp_diff_ms": 0.0,
+    "std_timestamp_diff_ms": 2.8888601779691134,
+    "sync_accuracy_percent": 100.0
+  },
+  "frame_rates": {
+    "0": {
+      "fps": 19.899533582001038,
+      "avg_interval_ms": 50.25243410250035,
+      "std_interval_ms": 11.40415527366539,
+      "total_frames": 411
+    },
+    "1": {
+      "fps": 19.911139862846397,
+      "avg_interval_ms": 50.223141763268444,
+      "std_interval_ms": 11.571242581353365,
+      "total_frames": 411
+    },
+    "2": {
+      "fps": 19.909203274887577,
+      "avg_interval_ms": 50.22802701810511,
+      "std_interval_ms": 11.391130778204511,
+      "total_frames": 411
+    }
+  },
+  "visual_sync": {
+    "samples_analyzed": 10,
+    "successful_conversions": 10,
+    "avg_brightness_correlation": 1.0,
+    "std_brightness_correlation": 5.73316704659901e-17,
+    "avg_motion_correlation": 0.9999999999999998,
+    "std_motion_correlation": 4.1962486042515756e-17
+  },
+  "test_timestamp": 1756047263.2795885
+}

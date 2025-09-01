@@ -147,3 +147,54 @@ endforeach()
 if(NOT EXISTS "${GSTREAMER_ROOT}")
     message(WARNING "GStreamer not found at ${GSTREAMER_ROOT}. Please install GStreamer development libraries.")
 endif()
+
+# ========== CPack 基础打包配置开始 ==========
+# 版本号（需你根据实际情况修改，如 1.0.0 等）
+set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_PACKAGE_VERSION_MAJOR "1")
+set(CPACK_PACKAGE_VERSION_MINOR "0")
+set(CPACK_PACKAGE_VERSION_PATCH "0")
+
+# 项目名称（会体现在安装包等相关标识中，可自定义，也可用项目名）
+set(CPACK_PACKAGE_NAME "SyncCameraTool")
+
+# 安装包生成器，这里选 ZIP 生成 zip 压缩包（基础打包常用）
+set(CPACK_GENERATOR "ZIP")  
+
+# 安装包描述（在安装相关信息里显示，简要说明项目作用）
+set(CPACK_PACKAGE_DESCRIPTION "Data acquisition and synchronization tool for multi-camera systems")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Multi-camera sync tool with FFmpeg/GStreamer support")
+
+# 授权协议相关（如果有单独的 LICENSE 文件，替换下面路径为实际 LICENSE 文件路径；
+# 若没有，用 readme.md 也可，或者你补充真实的授权说明文件路径）
+set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_SOURCE_DIR}/readme.md")  
+
+# ========== 关键：指定要打包的目标和文件 ==========
+# 假设你的可执行文件目标名称是 sync_camera（需你确认实际目标名，
+# 也就是 add_executable 里设置的目标，比如 add_executable(sync_camera ...)，
+# 这里就填 sync_camera ）
+set(EXECUTABLE_TARGET_NAME "sync_camera") 
+
+# ========== 替换原有的 install(DIRECTORY ...) 部分 ==========
+# 1. 安装可执行文件到 bin 目录
+install(TARGETS ${EXECUTABLE_TARGET_NAME}
+        RUNTIME DESTINATION bin
+)
+
+# 2. 手动安装所有已配置的 DLL（复用你已定义的 POST_BUILD_DLLS 列表）
+foreach(_dll IN LISTS POST_BUILD_DLLS)
+    install(FILES "${_dll}"
+            DESTINATION bin
+            CONFIGURATIONS Release  # 只在 Release 模式打包
+    )
+endforeach()
+
+# 3. 安装 GStreamer 插件目录（包含所有复制的插件）
+install(DIRECTORY "$<TARGET_FILE_DIR:sync_camera>/gstreamer-1.0/"
+        DESTINATION bin/gstreamer-1.0
+        CONFIGURATIONS Release
+)
+
+# ========== 启用 CPack 完成打包配置 ==========
+include(CPack)
+# ========== CPack 基础打包配置结束 ==========
