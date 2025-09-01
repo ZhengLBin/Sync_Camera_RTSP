@@ -1,4 +1,4 @@
-// shared_memory_streamer.cpp - 修复的原始I420 TCP流版本
+// tcp_streamer.cpp - 精简版本
 #include "../includes/tcp_streamer.h"
 #include <iostream>
 #include <cstring>
@@ -39,7 +39,7 @@ ShmFrameBuffer::~ShmFrameBuffer() {
     delete[] data;
 }
 
-// 全局GStreamer初始化
+// 简化的GStreamer初始化
 bool initialize_gstreamer_for_shm() {
     if (!gst_is_initialized()) {
         gst_init(nullptr, nullptr);
@@ -51,7 +51,6 @@ bool initialize_gstreamer_for_shm() {
         "appsrc", "tcpserversink", "queue"
     };
 
-    bool all_available = true;
     for (const auto& element_name : required_elements) {
         GstElement* element = gst_element_factory_make(element_name.c_str(), nullptr);
         if (element) {
@@ -59,11 +58,11 @@ bool initialize_gstreamer_for_shm() {
         }
         else {
             std::cerr << "[ERROR] Missing GStreamer element: " << element_name << std::endl;
-            all_available = false;
+            return false;
         }
     }
 
-    return all_available;
+    return true;
 }
 
 // TCPStreamer构造函数
@@ -73,7 +72,6 @@ TCPStreamer::TCPStreamer(const std::string& name, int port)
     running_(false), initialized_(false), need_data_(true),
     frame_count_(0), dropped_frame_count_(0), total_memory_allocated_(0) {
 
-    // 自动分配端口
     port_ = (port > 0) ? port : next_port_++;
     tcp_url_ = "tcp://localhost:" + std::to_string(port_);
 
@@ -91,7 +89,6 @@ bool TCPStreamer::init(int width, int height, int fps) {
     height_ = height;
     fps_ = fps;
 
-
     if (!create_pipeline()) {
         std::cerr << "[ERROR] Failed to create GStreamer pipeline" << std::endl;
         return false;
@@ -106,26 +103,19 @@ bool TCPStreamer::init(int width, int height, int fps) {
 
     running_ = true;
     push_thread_ = std::thread(&TCPStreamer::push_frame_loop, this);
-
     initialized_ = true;
-
-    // 调试信息
-    print_pipeline_state();
-    debug_caps_info();
 
     return true;
 }
 
-
 bool TCPStreamer::create_pipeline() {
     std::ostringstream pipeline_str;
 
-    // 确保帧率信息正确传递的pipeline
     pipeline_str << "appsrc name=mysrc "
         << "caps=\"video/x-raw,format=I420,width=" << width_
         << ",height=" << height_ << ",framerate=" << fps_ << "/1\" "
         << "is-live=true "
-        << "do-timestamp=true ! "  // 重新启用时间戳，确保帧率稳定
+        << "do-timestamp=true ! "
         << "tcpserversink host=127.0.0.1 port=" << port_
         << " sync=false";
 
@@ -144,7 +134,7 @@ bool TCPStreamer::create_pipeline() {
         return false;
     }
 
-    // 关键：确保caps完全固定，包括帧率
+    // 设置caps
     GstCaps* caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "I420",
         "width", G_TYPE_INT, width_,
@@ -152,12 +142,8 @@ bool TCPStreamer::create_pipeline() {
         "framerate", GST_TYPE_FRACTION, fps_, 1,
         nullptr);
 
-    // 验证caps是否固定
     if (!gst_caps_is_fixed(caps)) {
         std::cerr << "[ERROR] Caps are not fixed!" << std::endl;
-        gchar* caps_str = gst_caps_to_string(caps);
-        std::cerr << "[ERROR] Caps: " << caps_str << std::endl;
-        g_free(caps_str);
         gst_caps_unref(caps);
         return false;
     }
@@ -165,7 +151,7 @@ bool TCPStreamer::create_pipeline() {
     g_object_set(G_OBJECT(appsrc_),
         "caps", caps,
         "is-live", TRUE,
-        "do-timestamp", TRUE,  // 启用时间戳确保正确的帧率
+        "do-timestamp", TRUE,
         "format", GST_FORMAT_TIME,
         nullptr);
 
@@ -180,7 +166,6 @@ bool TCPStreamer::create_pipeline() {
     return true;
 }
 
-// 修复时间戳以确保正确的帧率
 bool TCPStreamer::push_frame_to_appsrc() {
     if (!appsrc_ || !running_.load()) {
         return false;
@@ -200,8 +185,6 @@ bool TCPStreamer::push_frame_to_appsrc() {
 
     size_t expected_size = width_ * height_ * 3 / 2;
     if (frame_buffer->size != expected_size) {
-        std::cerr << "[ERROR] Frame size mismatch in push: expected "
-            << expected_size << ", got " << frame_buffer->size << std::endl;
         return false;
     }
 
@@ -220,7 +203,7 @@ bool TCPStreamer::push_frame_to_appsrc() {
         return false;
     }
 
-    // 关键修复：使用固定间隔的时间戳，确保稳定帧率
+    // 设置时间戳
     static guint64 frame_number = 0;
     GstClockTime frame_duration = gst_util_uint64_scale(GST_SECOND, 1, fps_);
     GstClockTime timestamp = gst_util_uint64_scale(frame_number, GST_SECOND, fps_);
@@ -231,15 +214,13 @@ bool TCPStreamer::push_frame_to_appsrc() {
 
     frame_number++;
 
-    // 确保所有帧都是关键帧（对于原始视频）
     GST_BUFFER_FLAG_UNSET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
 
     GstFlowReturn ret = gst_app_src_push_buffer(GST_APP_SRC(appsrc_), buffer);
     if (ret != GST_FLOW_OK) {
         static int error_count = 0;
-        if (error_count < 5) {
-            std::cerr << "[ERROR] Failed to push buffer to TCP: " << ret
-                << " (" << gst_flow_get_name(ret) << ")" << std::endl;
+        if (error_count < 3) {
+            std::cerr << "[ERROR] Failed to push buffer to TCP: " << ret << std::endl;
             error_count++;
         }
         return false;
@@ -248,7 +229,6 @@ bool TCPStreamer::push_frame_to_appsrc() {
     return true;
 }
 
-// 改进的send_frame方法，添加更多检查
 bool TCPStreamer::send_frame(AVFrame* frame) {
     if (!running_.load() || !initialized_) {
         return false;
@@ -258,10 +238,7 @@ bool TCPStreamer::send_frame(AVFrame* frame) {
         frame->width != width_ || frame->height != height_) {
         static int error_count = 0;
         if (error_count < 3) {
-            std::cerr << "[ERROR] Frame format/size mismatch - Expected: I420 "
-                << width_ << "x" << height_
-                << ", Got: " << frame->format << " "
-                << frame->width << "x" << frame->height << std::endl;
+            std::cerr << "[ERROR] Frame format/size mismatch" << std::endl;
             error_count++;
         }
         return false;
@@ -284,12 +261,8 @@ bool TCPStreamer::send_frame(AVFrame* frame) {
     }
 
     auto frame_buffer = std::make_shared<ShmFrameBuffer>(frame);
-
-    // 验证frame buffer大小
     size_t expected_size = width_ * height_ * 3 / 2;
     if (frame_buffer->size != expected_size) {
-        std::cerr << "[ERROR] Frame buffer size mismatch: expected "
-            << expected_size << ", got " << frame_buffer->size << std::endl;
         return false;
     }
 
@@ -314,11 +287,6 @@ bool TCPStreamer::send_frame(AVFrame* frame) {
 }
 
 void TCPStreamer::push_frame_loop() {
-    int push_count = 0;
-    int failed_push_count = 0;
-    auto start_time = std::chrono::steady_clock::now();
-    auto last_stats_time = start_time;
-
     while (running_.load()) {
         bool has_appsrc = (appsrc_ != nullptr);
         bool needs_data = need_data_.load();
@@ -330,22 +298,7 @@ void TCPStreamer::push_frame_loop() {
         }
 
         if (has_appsrc && needs_data && queue_size > 0) {
-            bool pushed = push_frame_to_appsrc();
-            if (pushed) {
-                push_count++;
-            }
-            else {
-                failed_push_count++;
-            }
-        }
-
-        auto current_time = std::chrono::steady_clock::now();
-
-        if (std::chrono::duration_cast<std::chrono::seconds>(current_time - last_stats_time).count() >= 120) {
-            last_stats_time = current_time;
-        }
-
-        if (has_appsrc && needs_data && queue_size > 0) {
+            push_frame_to_appsrc();
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
         else {
@@ -354,14 +307,11 @@ void TCPStreamer::push_frame_loop() {
     }
 }
 
-
-
 void TCPStreamer::stop() {
     if (!running_.load()) {
         return;
     }
 
-    std::cout << "[TCP:" << port_ << "] Stopping..." << std::endl;
     running_ = false;
     initialized_ = false;
 
@@ -400,35 +350,18 @@ void TCPStreamer::stop() {
             std::cout << "[TCP:" << port_ << "] Cleared " << remaining_frames << " frames" << std::endl;
         }
     }
-
-    std::cout << "[TCP:" << port_ << "] Stopped. Sent: " << frame_count_
-        << ", Dropped: " << dropped_frame_count_ << std::endl;
 }
 
-// 添加调试方法
+// 简化的调试方法
 void TCPStreamer::print_pipeline_state() {
-    if (!pipeline_) return;
-
-    GstState state;
-    GstState pending;
-    GstStateChangeReturn ret = gst_element_get_state(pipeline_, &state, &pending, 0);
-
+    // 精简实现，只在需要时使用
 }
 
 void TCPStreamer::debug_caps_info() {
-    if (!appsrc_) return;
-
-    GstCaps* caps;
-    g_object_get(G_OBJECT(appsrc_), "caps", &caps, nullptr);
-    if (caps) {
-        gchar* caps_str = gst_caps_to_string(caps);
-
-        g_free(caps_str);
-        gst_caps_unref(caps);
-    }
+    // 精简实现，只在需要时使用
 }
 
-// 回调函数保持不变
+// 回调函数
 void TCPStreamer::need_data_cb(GstElement* appsrc, guint unused, gpointer user_data) {
     TCPStreamer* streamer = static_cast<TCPStreamer*>(user_data);
     streamer->need_data_ = true;

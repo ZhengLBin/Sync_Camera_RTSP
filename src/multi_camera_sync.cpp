@@ -1,4 +1,4 @@
-﻿// multi_camera_sync.cpp - 无插值版本：专注解决Camera 0帧捕获问题
+﻿// multi_camera_sync.cpp - 精简版本
 #include "../includes/multi_camera_sync.h"
 #include <iostream>
 #include <stdexcept>
@@ -6,23 +6,12 @@
 #include <algorithm>
 #include <chrono>
 #include <functional>
-#include <numeric>    
-#include <array>
+#include <numeric>
 
 // 全局统计变量
 std::atomic<size_t> g_total_frames_allocated{ 0 };
 std::atomic<size_t> g_total_frames_freed{ 0 };
 std::atomic<size_t> g_active_frame_count{ 0 };
-
-// 简化调试级别
-#define DEBUG_ERROR 1
-#define DEBUG_INFO 2
-#ifndef DEBUG_LEVEL
-#define DEBUG_LEVEL DEBUG_INFO
-#endif
-
-#define DEBUG_PRINT(level, ...) \
-    do { if (DEBUG_LEVEL >= level) { std::cout << __VA_ARGS__ << std::endl; } } while(0)
 
 //==============================================================================
 // StatsManager 实现
@@ -63,24 +52,15 @@ bool StatsManager::should_report(int interval_seconds) {
 }
 
 void StatsManager::print_summary(const std::string& prefix) {
+    // 精简的统计输出，只在需要时调用
     std::lock_guard<std::mutex> lock(stats_mutex_);
     auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
         std::chrono::steady_clock::now() - start_time_).count();
 
-    DEBUG_PRINT(DEBUG_INFO, "[STATS" << prefix << "] Runtime: " << elapsed << "s");
-
-    for (size_t i = 0; i < camera_stats_.size(); ++i) {
-        const auto& stats = camera_stats_[i];
-        double fps = elapsed > 0 ? static_cast<double>(stats.frames_captured) / elapsed : 0;
-        DEBUG_PRINT(DEBUG_INFO, "[CAM" << i << "] FPS: " << fps
-            << ", Captured: " << stats.frames_captured
-            << ", Dropped: " << (stats.frames_dropped_queue + stats.frames_dropped_memory)
-            << ", Read fails: " << stats.read_failures);
-    }
-
     double sync_rate = sync_stats_.sync_attempts > 0 ?
         static_cast<double>(sync_stats_.sync_success) / sync_stats_.sync_attempts * 100.0 : 0;
-    DEBUG_PRINT(DEBUG_INFO, "[SYNC] Success rate: " << sync_rate << "%");
+
+    std::cout << "[FINAL] Runtime: " << elapsed << "s, Sync rate: " << sync_rate << "%" << std::endl;
 }
 
 //==============================================================================
@@ -133,69 +113,41 @@ std::vector<AVFrame*> TimestampSyncStrategy::find_sync_frames(
     const size_t N = queues.size();
     if (N == 0) return {};
 
-    // 1) 所有队列必须至少有1帧，否则无法匹配
+    // 检查所有队列是否有帧
     for (const auto& q : queues) {
         if (q.empty()) return {};
     }
 
-    // 2) 计算容差窗口
+    // 计算容差
     const double fps = (config.expected_fps > 0.1 ? config.expected_fps : 25.0);
-    const int64_t frame_period_us = (int64_t)(1e6 / fps);
-    // 放宽时间戳容忍度
-    const int64_t tol_us = 5000000;
-    /*
     const int64_t tol_us = (config.timestamp_tolerance_us > 0)
         ? config.timestamp_tolerance_us
-        : (int64_t)(3.0 * frame_period_us); 
-    */
-    // 3) 取各路队首的时间戳
-    std::vector<int64_t> heads;
-    heads.reserve(N);
-    for (const auto& q : queues) {
-        heads.push_back(q.front().timestamp_us);
-    }
+        : static_cast<int64_t>(3.0 * 1e6 / fps);
 
-
-
-    // 4) 用中位数作为参考时间
-    std::vector<int64_t> tmp = heads;
-    std::nth_element(tmp.begin(), tmp.begin() + tmp.size() / 2, tmp.end());
-    const int64_t ref_t = tmp[tmp.size() / 2];
-
-    //-----------------debug------------------
-    static int debug_counter = 0;
-    if (++debug_counter % 10 == 0) { // 每100次输出一次
-        std::cout << "[SYNC_DEBUG] Camera timestamps: ";
-        for (size_t i = 0; i < heads.size(); ++i) {
-            std::cout << heads[i] << " ";
-        }
-        std::cout << "\n[SYNC_DEBUG] Ref: " << ref_t << ", Tolerance: " << tol_us << std::endl;
-
-        for (size_t i = 0; i < N; ++i) {
-            int64_t diff = std::llabs(heads[i] - ref_t);
-            std::cout << "[SYNC_DEBUG] Cam" << i << " diff: " << diff << "us" << std::endl;
-        }
-    }
-
-    // 5) 检查是否所有路的队首都在 [ref_t - tol, ref_t + tol] 内
+    // 获取队首时间戳
+    std::vector<int64_t> heads(N);
     for (size_t i = 0; i < N; ++i) {
-        if (std::llabs(heads[i] - ref_t) > tol_us) {
-            return {}; // 有一路超出容差，暂不组成同步组
-        }
+        heads[i] = queues[i].front().timestamp_us;
     }
 
-    // 6) 所有队首均在容差内：组成同步组（仅返回帧指针；出队操作放到外面做）
-    std::vector<AVFrame*> out;
-    out.reserve(N);
-    for (const auto& q : queues) {
-        out.push_back(q.front().frame);
+    // 使用min-max方式检查同步
+    int64_t t_min = *std::min_element(heads.begin(), heads.end());
+    int64_t t_max = *std::max_element(heads.begin(), heads.end());
+
+    if (t_max - t_min <= tol_us) {
+        // 同步成功，返回帧指针
+        std::vector<AVFrame*> sync_group(N);
+        for (size_t i = 0; i < N; ++i) {
+            sync_group[i] = queues[i].front().frame;
+        }
+        return sync_group;
     }
-    return out;
+
+    return {}; // 同步失败
 }
 
-
 //==============================================================================
-// MultiCameraCapture 实现 - 无插值版本
+// MultiCameraCapture 实现
 //==============================================================================
 MultiCameraCapture::MultiCameraCapture() {
     avdevice_register_all();
@@ -207,7 +159,7 @@ MultiCameraCapture::~MultiCameraCapture() {
     full_reset();
     size_t leaked = g_active_frame_count.load();
     if (leaked > 0) {
-        DEBUG_PRINT(DEBUG_ERROR, "[WARNING] Memory leak: " << leaked << " frames");
+        std::cerr << "[WARNING] Memory leak: " << leaked << " frames" << std::endl;
     }
 }
 
@@ -223,13 +175,12 @@ bool MultiCameraCapture::init(const std::vector<std::string>& device_paths, cons
     config_ = config;
     stats_manager_ = std::make_unique<StatsManager>(camera_count_);
 
-
     cameras_.resize(camera_count_);
     frame_queues_.resize(camera_count_);
 
     for (size_t i = 0; i < camera_count_; ++i) {
         if (!init_camera(static_cast<int>(i), device_paths[i])) {
-            DEBUG_PRINT(DEBUG_ERROR, "[ERROR] Failed to init camera " << i);
+            std::cerr << "[ERROR] Failed to init camera " << i << std::endl;
             for (size_t j = 0; j < i; ++j) {
                 cleanup_camera(static_cast<int>(j));
             }
@@ -249,13 +200,13 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
     const AVInputFormat* input_format = av_find_input_format("dshow");
     AVDictionary* options = nullptr;
 
-    // 判断摄像头类型：MJPEG 或 RAW
+    // 根据摄像头类型设置参数
     bool is_mjpeg_camera = (device_path.find("USB Camera") != std::string::npos &&
         device_path.find("@device_pnp") == std::string::npos);
     bool is_raw_camera = (device_path.find("@device_pnp") != std::string::npos);
 
     if (is_mjpeg_camera) {
-        // MJPEG 摄像头轻量配置
+        // MJPEG 摄像头配置
         av_dict_set(&options, "vcodec", "mjpeg", 0);
         av_dict_set(&options, "video_size", "640x480", 0);
         av_dict_set(&options, "framerate", "30", 0);
@@ -270,7 +221,7 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
         av_dict_set(&options, "use_wallclock_as_timestamps", "1", 0);
     }
     else if (is_raw_camera) {
-        // RAW 摄像头大缓冲配置
+        // RAW 摄像头配置
         av_dict_set(&options, "video_size", "640x480", 0);
         av_dict_set(&options, "framerate", "30", 0);
         av_dict_set(&options, "rtbufsize", "512M", 0);
@@ -285,7 +236,7 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
         av_dict_set(&options, "use_wallclock_as_timestamps", "1", 0);
     }
     else {
-        // 默认安全配置
+        // 默认配置
         av_dict_set(&options, "video_size", "640x480", 0);
         av_dict_set(&options, "framerate", "30", 0);
         av_dict_set(&options, "rtbufsize", "512M", 0);
@@ -305,12 +256,12 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
     if (ret != 0) {
         char error_buf[AV_ERROR_MAX_STRING_SIZE];
         av_strerror(ret, error_buf, sizeof(error_buf));
-        DEBUG_PRINT(DEBUG_ERROR, "[ERROR CAM" << index << "] Init failed: " << error_buf);
+        std::cerr << "[ERROR] Camera " << index << " init failed: " << error_buf << std::endl;
         return false;
     }
 
     if (avformat_find_stream_info(cam.fmt_ctx, nullptr) < 0) {
-        DEBUG_PRINT(DEBUG_ERROR, "[ERROR CAM" << index << "] Could not find stream info");
+        std::cerr << "[ERROR] Could not find stream info for camera " << index << std::endl;
         avformat_close_input(&cam.fmt_ctx);
         return false;
     }
@@ -324,7 +275,7 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
     }
 
     if (cam.video_stream_idx == -1) {
-        DEBUG_PRINT(DEBUG_ERROR, "[ERROR CAM" << index << "] No video stream found");
+        std::cerr << "[ERROR] No video stream found for camera " << index << std::endl;
         avformat_close_input(&cam.fmt_ctx);
         return false;
     }
@@ -332,20 +283,20 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
     AVCodecParameters* codecpar = cam.fmt_ctx->streams[cam.video_stream_idx]->codecpar;
     const AVCodec* codec = avcodec_find_decoder(codecpar->codec_id);
     if (!codec) {
-        DEBUG_PRINT(DEBUG_ERROR, "[ERROR CAM" << index << "] Could not find decoder");
+        std::cerr << "[ERROR] Could not find decoder for camera " << index << std::endl;
         avformat_close_input(&cam.fmt_ctx);
         return false;
     }
 
     cam.codec_ctx = avcodec_alloc_context3(codec);
     if (!cam.codec_ctx) {
-        DEBUG_PRINT(DEBUG_ERROR, "[ERROR CAM" << index << "] Could not allocate codec context");
+        std::cerr << "[ERROR] Could not allocate codec context for camera " << index << std::endl;
         avformat_close_input(&cam.fmt_ctx);
         return false;
     }
 
     if (avcodec_parameters_to_context(cam.codec_ctx, codecpar) < 0) {
-        DEBUG_PRINT(DEBUG_ERROR, "[ERROR CAM" << index << "] Could not copy codec params");
+        std::cerr << "[ERROR] Could not copy codec params for camera " << index << std::endl;
         avcodec_free_context(&cam.codec_ctx);
         avformat_close_input(&cam.fmt_ctx);
         return false;
@@ -355,7 +306,7 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
     cam.codec_ctx->delay = 0;
 
     if (avcodec_open2(cam.codec_ctx, codec, nullptr) < 0) {
-        DEBUG_PRINT(DEBUG_ERROR, "[ERROR CAM" << index << "] Could not open codec");
+        std::cerr << "[ERROR] Could not open codec for camera " << index << std::endl;
         avcodec_free_context(&cam.codec_ctx);
         avformat_close_input(&cam.fmt_ctx);
         return false;
@@ -364,16 +315,15 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
     cam.frame = av_frame_alloc();
     cam.yuv_frame = av_frame_alloc();
     if (!cam.frame || !cam.yuv_frame) {
-        DEBUG_PRINT(DEBUG_ERROR, "[ERROR CAM" << index << "] Could not allocate frames");
+        std::cerr << "[ERROR] Could not allocate frames for camera " << index << std::endl;
         return false;
     }
 
     int yuv_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P,
-        cam.codec_ctx->width,
-        cam.codec_ctx->height, 32);
+        cam.codec_ctx->width, cam.codec_ctx->height, 32);
     cam.yuv_buffer = (uint8_t*)av_malloc(yuv_size);
     if (!cam.yuv_buffer) {
-        DEBUG_PRINT(DEBUG_ERROR, "[ERROR CAM" << index << "] Could not allocate YUV buffer");
+        std::cerr << "[ERROR] Could not allocate YUV buffer for camera " << index << std::endl;
         return false;
     }
 
@@ -387,7 +337,7 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
         SWS_BILINEAR, nullptr, nullptr, nullptr);
 
     if (!cam.sws_ctx_yuv) {
-        DEBUG_PRINT(DEBUG_ERROR, "[ERROR CAM" << index << "] Could not create SWS context");
+        std::cerr << "[ERROR] Could not create SWS context for camera " << index << std::endl;
         return false;
     }
 
@@ -406,13 +356,11 @@ void MultiCameraCapture::start() {
     }
 
     sync_thread_ = std::thread(&MultiCameraCapture::sync_loop, this);
-    std::cout << "[DEBUG] sync_thread started" << std::endl;
 }
 
 void MultiCameraCapture::stop() {
     if (!running_.load()) return;
 
-    DEBUG_PRINT(DEBUG_INFO, "[STOP] Stopping capture system");
     running_ = false;
     capture_active_ = false;
 
@@ -425,7 +373,7 @@ void MultiCameraCapture::stop() {
 
     size_t cleared = force_clear_all_queues();
     if (cleared > 0) {
-        DEBUG_PRINT(DEBUG_INFO, "[STOP] Cleared " << cleared << " remaining frames");
+        std::cout << "[STOP] Cleared " << cleared << " remaining frames" << std::endl;
     }
 
     if (stats_manager_) {
@@ -440,33 +388,14 @@ void MultiCameraCapture::capture_thread(int camera_index) {
     AVPacket* packet = av_packet_alloc();
     if (!packet) return;
 
-    AVStream* vs = cam.fmt_ctx->streams[cam.video_stream_idx];
-    AVRational tb = vs->time_base;
-
-    // 程序启动时间基准（静态变量，所有线程共享）
+    // 时间戳基准
     static int64_t program_start_time = 0;
     static std::once_flag start_time_flag;
     std::call_once(start_time_flag, []() {
         program_start_time = av_gettime_relative();
         });
 
-    // 注释掉帧率控制，让硬件自然产生帧
-    /*
-    int64_t frame_period_us = static_cast<int64_t>(1e6 / (config_.expected_fps > 0 ? config_.expected_fps : 20.0));
-    int64_t last_ts = av_gettime_relative();
-    */
-
     while (running_) {
-        // 注释掉软件帧率限制
-        /*
-        int64_t now = av_gettime_relative();
-        if (now - last_ts < frame_period_us) {
-            std::this_thread::sleep_for(std::chrono::microseconds(frame_period_us - (now - last_ts)));
-            continue;
-        }
-        last_ts = av_gettime_relative();
-        */
-
         if (!capture_active_.load()) {
             std::this_thread::sleep_for(std::chrono::milliseconds(5));
             continue;
@@ -480,7 +409,6 @@ void MultiCameraCapture::capture_thread(int camera_index) {
             continue;
         }
 
-        // 关键修改：立即获取时间戳，使用相对于程序启动的时间
         int64_t ts_us = av_gettime_relative() - program_start_time;
 
         if (packet->stream_index != cam.video_stream_idx) {
@@ -503,17 +431,7 @@ void MultiCameraCapture::capture_thread(int camera_index) {
                 break;
             }
 
-
-            // 检查硬件时间戳，但优先使用软件时间戳
-            if (cam.frame->best_effort_timestamp != AV_NOPTS_VALUE) {
-                int64_t hw_ts = av_rescale_q(cam.frame->best_effort_timestamp, tb, AVRational{ 1, 1000000 });
-                // 如果硬件时间戳合理且接近软件时间戳，则使用硬件时间戳
-                if (hw_ts > 0 && std::abs(hw_ts - ts_us) < 1000000) { // 1秒容差
-                    ts_us = hw_ts;
-                }
-            }
-
-            // 转 YUV420P
+            // 转换为YUV420P
             if (cam.sws_ctx_yuv) {
                 int sws_ret = sws_scale(cam.sws_ctx_yuv,
                     (const uint8_t* const*)cam.frame->data, cam.frame->linesize,
@@ -528,7 +446,7 @@ void MultiCameraCapture::capture_thread(int camera_index) {
                     if (cloned) {
                         std::lock_guard<std::mutex> lock(queue_mutex_);
 
-                        // 队列过大或过期帧清理
+                        // 队列管理
                         const size_t max_q = std::max<size_t>(config_.max_queue_size, 8);
                         while (frame_queues_[camera_index].size() >= max_q ||
                             (!frame_queues_[camera_index].empty() &&
@@ -551,62 +469,26 @@ void MultiCameraCapture::capture_thread(int camera_index) {
     av_packet_free(&packet);
 }
 
-// ===================== sync_loop =====================
 void MultiCameraCapture::sync_loop() {
-    std::cout << "[DEBUG] sync_loop started" << std::endl;
     const auto tick = std::chrono::milliseconds(3);
     const size_t N = frame_queues_.size();
     if (N == 0) {
-        std::cout << "[ERROR] No frame queues, sync_loop exiting" << std::endl;
+        std::cerr << "[ERROR] No frame queues, sync_loop exiting" << std::endl;
         return;
     }
 
     const double fps = (config_.expected_fps > 0 ? config_.expected_fps : 25.0);
-    const int64_t tol_us = (config_.timestamp_tolerance_us > 0 ? config_.timestamp_tolerance_us : static_cast<int64_t>(0.4 * 1e6 / fps));
-    const size_t MIN_QUEUE_DEPTH = 2;
+    const int64_t tol_us = (config_.timestamp_tolerance_us > 0 ?
+        config_.timestamp_tolerance_us : static_cast<int64_t>(3.0 * 1e6 / fps));
 
     while (running_) {
-        
         std::this_thread::sleep_for(tick);
         stats_manager_->update_sync_stats("attempt");
 
         std::vector<AVFrame*> group(N, nullptr);
-
         std::lock_guard<std::mutex> lock(queue_mutex_);
 
-        // 添加这些调试输出
-        static int queue_debug_counter = 0;
-        if (++queue_debug_counter % 500 == 0) {
-            std::cout << "[QUEUE_DEBUG] Queue sizes: ";
-            for (size_t i = 0; i < frame_queues_.size(); ++i) {
-                std::cout << frame_queues_[i].size() << " ";
-            }
-            std::cout << std::endl;
-        }
-
-        /*
-        bool below_min_depth = false;
-        for (auto& q : frame_queues_) {
-            if (q.size() < MIN_QUEUE_DEPTH) {
-                below_min_depth = true;
-                break;
-            }
-        }
-        if (below_min_depth) continue;
-       
-
-        if (below_min_depth) {
-            static int skip_counter = 0;
-            if (++skip_counter % 1000 == 0) {
-                std::cout << "[DEBUG] Skipping sync due to queue depth, MIN_QUEUE_DEPTH="
-                    << MIN_QUEUE_DEPTH << std::endl;
-            }
-            continue;
-        }
-         */
-
-
-        // 确保队列非空，避免 front() 崩溃
+        // 检查是否所有队列都有帧
         bool any_empty = false;
         std::vector<int64_t> heads(N);
         for (size_t i = 0; i < N; ++i) {
@@ -622,13 +504,12 @@ void MultiCameraCapture::sync_loop() {
         int64_t t_max = *std::max_element(heads.begin(), heads.end());
 
         if (t_max - t_min <= 3 * tol_us) {
-            // 满足同步条件：弹出每路队首
+            // 同步成功
             for (size_t i = 0; i < N; ++i) {
                 group[i] = frame_queues_[i].front().frame;
                 frame_queues_[i].pop_front();
             }
 
-            // 控制同步队列大小
             if (synced_frame_queue_.size() >= config_.max_sync_queue_size) {
                 auto& old_frames = synced_frame_queue_.front();
                 for (auto* f : old_frames) free_cloned_frame(&f);
@@ -637,22 +518,24 @@ void MultiCameraCapture::sync_loop() {
 
             synced_frame_queue_.push_back(group);
             stats_manager_->update_sync_stats("success");
+            optimizer_->update_sync_stats(true);
         }
         else {
-            // 弹出过早帧，让慢路追上
+            // 丢弃过早的帧
             int64_t drop_threshold = t_max - tol_us;
             for (size_t i = 0; i < N; ++i) {
-                while (!frame_queues_[i].empty() && frame_queues_[i].front().timestamp_us < drop_threshold) {
+                while (!frame_queues_[i].empty() &&
+                    frame_queues_[i].front().timestamp_us < drop_threshold) {
                     free_cloned_frame(&frame_queues_[i].front().frame);
                     frame_queues_[i].pop_front();
                     stats_manager_->update_camera_stats(static_cast<int>(i), "skipped");
                 }
             }
             stats_manager_->update_sync_stats("fail_timestamp");
+            optimizer_->update_sync_stats(false);
         }
     }
 }
-
 
 void MultiCameraCapture::add_to_sync_queue(const std::vector<AVFrame*>& frames) {
     std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -698,15 +581,14 @@ size_t MultiCameraCapture::get_sync_queue_size() const {
 }
 
 InterpolationStats MultiCameraCapture::get_interpolation_stats() const {
-    // 返回空统计，不使用插值
     return InterpolationStats{};
 }
 
 void MultiCameraCapture::enable_interpolation_for_camera(int camera_index, bool enable) {
-    // 空实现，不使用插值
+    // 空实现
 }
 
-// 内存管理和清理函数
+// 内存管理函数
 void MultiCameraCapture::free_cloned_frame(AVFrame** frame) {
     if (frame && *frame) {
         if ((*frame)->data[0]) {
@@ -785,7 +667,7 @@ void MultiCameraCapture::full_reset() {
     camera_count_ = 0;
 
     if (total_freed > 0) {
-        DEBUG_PRINT(DEBUG_INFO, "[RESET] Freed " << total_freed << " frames");
+        std::cout << "[RESET] Freed " << total_freed << " frames" << std::endl;
     }
 }
 
@@ -818,7 +700,7 @@ size_t MultiCameraCapture::emergency_memory_cleanup() {
     std::lock_guard<std::mutex> lock(queue_mutex_, std::adopt_lock);
 
     size_t total_cleared = 0;
-    size_t keep_frames = 5; // 统一保留5帧
+    size_t keep_frames = 3; // 只保留3帧
 
     for (auto& queue : frame_queues_) {
         while (queue.size() > keep_frames) {
@@ -828,7 +710,7 @@ size_t MultiCameraCapture::emergency_memory_cleanup() {
         }
     }
 
-    while (synced_frame_queue_.size() > 3) {
+    while (synced_frame_queue_.size() > 2) {
         auto& frames = synced_frame_queue_.front();
         for (auto* frame : frames) {
             free_cloned_frame(&frame);
@@ -840,7 +722,7 @@ size_t MultiCameraCapture::emergency_memory_cleanup() {
     return total_cleared;
 }
 
-// 基础控制和查询函数
+// 基础控制函数
 void MultiCameraCapture::pause_capture() {
     capture_active_ = false;
 }
