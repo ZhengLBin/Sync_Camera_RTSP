@@ -9,7 +9,7 @@ import sys
 import queue
 
 class AdaptiveCameraClient:
-    def __init__(self, host='127.0.0.1', start_port=5010, width=640, height=480):
+    def __init__(self, host='127.0.0.1', start_port=6010, width=640, height=480):
         self.host = host
         self.start_port = start_port
         self.width = width
@@ -522,7 +522,7 @@ def main():
     if len(sys.argv) > 1:
         start_port = int(sys.argv[1])
     else:
-        start_port = 5010
+        start_port = 6010
     
     print(f"Starting adaptive multi-camera client from port {start_port}")
     

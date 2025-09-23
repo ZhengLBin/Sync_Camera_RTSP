@@ -52,6 +52,8 @@ public:
     void debug_caps_info();
     // 停止流媒体
     void stop();
+    bool is_port_in_use(int port);
+    static int allocate_port();
 
     // 获取连接信息
     std::string get_socket_path() const { return tcp_url_; }
@@ -110,7 +112,9 @@ private:
 
     // 常量
     static const size_t MAX_QUEUE_SIZE = 3;
-    static int next_port_;
+    static std::atomic<int> next_port_;  // 改为原子类型
+    static std::mutex port_allocation_mutex_;  // 添加互斥锁
+
 };
 
 // 全局GStreamer初始化函数

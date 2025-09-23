@@ -35,7 +35,7 @@ add_executable(sync_camera
   "includes/multi_camera_sync.h"
   
  "includes/tcp_streamer.h"
-)
+ "src/camera_input_source.cpp" "includes/camera_input_source.h")
 
 # Link FFmpeg
 target_link_libraries(sync_camera PRIVATE
@@ -71,31 +71,125 @@ add_custom_command(TARGET sync_camera POST_BUILD
 )
 
 # Copy FFmpeg and GStreamer core DLLs
-set(POST_BUILD_DLLS
-    # FFmpeg (已有的保持不变)
-    "${FFMPEG_ROOT}/bin/avcodec-61.dll"
-    "${FFMPEG_ROOT}/bin/avformat-61.dll"
-    "${FFMPEG_ROOT}/bin/avutil-59.dll"
-    "${FFMPEG_ROOT}/bin/swscale-8.dll"
-    "${FFMPEG_ROOT}/bin/avdevice-61.dll"
-    
-    # GStreamer 核心库
-    "${GSTREAMER_ROOT}/bin/gstreamer-1.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/gstapp-1.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/gstvideo-1.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/gstrtspserver-1.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/glib-2.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/gobject-2.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/intl-8.dll"
-    
-    # 添加这些重要的 GStreamer 库
-    "${GSTREAMER_ROOT}/bin/gstbase-1.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/gstcontroller-1.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/gstnet-1.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/gio-2.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/gmodule-2.0-0.dll"
-    "${GSTREAMER_ROOT}/bin/gthread-2.0-0.dll"
+
+# 删除您原来的 POST_BUILD_DLLS 相关的所有代码，用以下代码完全替换：
+
+# ========== 自动检测和复制DLL开始 ==========
+
+# 自动复制所有FFmpeg DLL
+message(STATUS "Detecting FFmpeg DLLs...")
+file(GLOB FFMPEG_DLLS "${FFMPEG_ROOT}/bin/*.dll")
+if(FFMPEG_DLLS)
+    foreach(_dll IN LISTS FFMPEG_DLLS)
+        get_filename_component(_dll_name "${_dll}" NAME)
+        add_custom_command(TARGET sync_camera POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_dll}"
+            "$<TARGET_FILE_DIR:sync_camera>/"
+            COMMENT "Copying FFmpeg DLL: ${_dll_name}"
+        )
+        message(STATUS "  Will copy: ${_dll_name}")
+    endforeach()
+    message(STATUS "FFmpeg DLL detection complete")
+else()
+    message(WARNING "No FFmpeg DLLs found in ${FFMPEG_ROOT}/bin/")
+endif()
+
+# 选择性复制GStreamer DLL
+message(STATUS "Detecting GStreamer DLLs...")
+set(GSTREAMER_ESSENTIAL_DLLS
+    "gstreamer-1.0-0.dll"
+    "glib-2.0-0.dll"
+    "gobject-2.0-0.dll"
+    "gio-2.0-0.dll"
+    "gmodule-2.0-0.dll"
+    "gthread-2.0-0.dll"
+    "gstapp-1.0-0.dll"
+    "gstvideo-1.0-0.dll"
+    "gstbase-1.0-0.dll"
+    "gstcontroller-1.0-0.dll"
+    "gstnet-1.0-0.dll"
+    "gstrtspserver-1.0-0.dll"
+    "intl-8.dll"
+    "pcre2-8-0.dll"
+    "ffi-8.dll"
+    "iconv-2.dll"
+    "charset-1.dll"
+    "z-1.dll"
+    "orc-0.4-0.dll"
+    "winpthread-1.dll"
+    "gstaudio-1.0-0.dll"
+    "gsttag-1.0-0.dll"
+    "gstpbutils-1.0-0.dll"
+    "gstfft-1.0-0.dll"
 )
+
+set(FOUND_COUNT 0)
+foreach(_dll_name IN LISTS GSTREAMER_ESSENTIAL_DLLS)
+    set(_dll_path "${GSTREAMER_ROOT}/bin/${_dll_name}")
+    if(EXISTS "${_dll_path}")
+        add_custom_command(TARGET sync_camera POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_dll_path}"
+            "$<TARGET_FILE_DIR:sync_camera>/"
+            COMMENT "Copying GStreamer DLL: ${_dll_name}"
+        )
+        message(STATUS "  Will copy: ${_dll_name}")
+        math(EXPR FOUND_COUNT "${FOUND_COUNT} + 1")
+    else()
+        message(STATUS "  Not found (skipping): ${_dll_name}")
+    endif()
+endforeach()
+
+message(STATUS "GStreamer DLL detection complete - found ${FOUND_COUNT} DLLs")
+
+# ========== 自动检测和复制DLL结束 ==========
+
+# 继续保持原有的GStreamer插件复制代码
+add_custom_command(TARGET sync_camera POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:sync_camera>/gstreamer-1.0"
+)
+
+set(REQUIRED_PLUGINS
+    gstcoreelements.dll
+    gstapp.dll
+    gsttcp.dll
+    gstvideoconvertscale.dll
+    gstvideoparsersbad.dll
+    gstx264.dll
+    gstrtp.dll
+    gstrtpmanager.dll
+    gstplayback.dll
+    gsttypefindfunctions.dll
+)
+
+set(PLUGIN_FOUND_COUNT 0)
+foreach(_plugin IN LISTS REQUIRED_PLUGINS)
+    set(_plugin_path "${GSTREAMER_ROOT}/lib/gstreamer-1.0/${_plugin}")
+    if(EXISTS "${_plugin_path}")
+        add_custom_command(TARGET sync_camera POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${_plugin_path}"
+            "$<TARGET_FILE_DIR:sync_camera>/gstreamer-1.0/${_plugin}"
+            COMMENT "Copying plugin: ${_plugin}"
+        )
+        message(STATUS "  Will copy plugin: ${_plugin}")
+        math(EXPR PLUGIN_FOUND_COUNT "${PLUGIN_FOUND_COUNT} + 1")
+    else()
+        message(STATUS "  Plugin not found: ${_plugin}")
+    endif()
+endforeach()
+
+message(STATUS "Plugin detection complete - found ${PLUGIN_FOUND_COUNT} plugins")
+
+# 构建完成提示
+add_custom_command(TARGET sync_camera POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
+    COMMAND ${CMAKE_COMMAND} -E echo "Build completed! All DLLs copied successfully."
+    COMMAND ${CMAKE_COMMAND} -E echo "=========================================="
+    COMMENT "Build summary"
+)
+
 foreach(_dll IN LISTS POST_BUILD_DLLS)
     add_custom_command(TARGET sync_camera POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
