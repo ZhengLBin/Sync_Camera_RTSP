@@ -326,10 +326,7 @@ void MultiCameraCapture::capture_thread(int camera_index) {
                         identical_frame_count++;
                     }
                     else {
-                        if (identical_frame_count > 0) {
-                            std::cout << "Camera " << camera_index << " had " << identical_frame_count
-                                << " identical frames, now got new frame (checksum: " << current_checksum << ")" << std::endl;
-                        }
+                       
                         identical_frame_count = 0;
                         last_frame_checksum = current_checksum;
                     }

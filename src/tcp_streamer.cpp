@@ -115,7 +115,9 @@ bool TCPStreamer::create_pipeline() {
         << "is-live=true do-timestamp=true block=true max-buffers=3 ! "
         << "queue ! "
         << "x264enc tune=zerolatency speed-preset=veryfast ! "
-        << "tcpserversink host=127.0.0.1 port=" << port_ << " sync=false";
+        << "rtph264pay config-interval=1 pt=96 ! "
+        << "udpsink host=127.0.0.1 port=" << port_ << " sync=false";
+
 
     std::cout << "Creating H.264 pipeline: " << pipeline_str.str() << std::endl;
 

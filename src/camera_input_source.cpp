@@ -1,4 +1,4 @@
-#include "../includes/camera_input_source.h"
+ï»¿#include "../includes/camera_input_source.h"
 #include <iostream>
 #include <set>
 
@@ -8,7 +8,7 @@ extern "C" {
 }
 
 //==============================================================================
-// USBCameraSource ÊµÏÖ
+// USBCameraSource å®žçŽ°
 //==============================================================================
 
 CameraDetectionResult USBCameraSource::detect_cameras() {
@@ -78,7 +78,7 @@ std::vector<std::string> USBCameraSource::scan_usb_cameras() {
 
         std::string device_description = device->device_description ? device->device_description : "";
 
-        // Ìø¹ýÒôÆµÉè±¸
+        // è·³è¿‡éŸ³é¢‘è®¾å¤‡
         if (device_description.find("audio") != std::string::npos ||
             device_description.find("Microphone") != std::string::npos) {
             continue;
@@ -99,7 +99,7 @@ std::vector<std::string> USBCameraSource::scan_usb_cameras() {
 }
 
 //==============================================================================
-// RTSPCameraSource ÊµÏÖ
+// RTSPCameraSource å®žçŽ°
 //==============================================================================
 
 RTSPCameraSource::RTSPCameraSource(const std::vector<std::string>& rtsp_urls)
@@ -161,7 +161,7 @@ bool RTSPCameraSource::test_camera_connection(const std::string& rtsp_url) {
 }
 
 //==============================================================================
-// CameraSourceFactory ÊµÏÖ
+// CameraSourceFactory å®žçŽ°
 //==============================================================================
 
 std::unique_ptr<CameraInputSource> CameraSourceFactory::create_usb_source() {
