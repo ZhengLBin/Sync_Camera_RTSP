@@ -1,0 +1,10 @@
+^D:\_DESKTOPMOVEHERE\LEJI_PROJ\SYNC_CAMERA\BUILD\CMAKEFILES\B00209A7D01E29F5B925353F34366E3A\GENERATE.STAMP.RULE
+setlocal
+"F:\Program Files\CMake\bin\cmake.exe" -SD:/_DesktopMoveHere/Leji_proj/sync_camera -BD:/_DesktopMoveHere/Leji_proj/sync_camera/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file D:/_DesktopMoveHere/Leji_proj/sync_camera/build/sync_camera.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd

@@ -5,14 +5,12 @@
 #include <string>
 #include <memory>
 
-// ÉãÏñÍ·ÊäÈëÄ£Ê½Ã¶¾Ù
+// æ‘„åƒå¤´è¾“å…¥æ¨¡å¼æšä¸¾
 enum class CameraInputMode {
-    USB_CAMERAS,
-    RTSP_STREAMS,
-    MIXED_MODE
+    USB_CAMERAS
 };
 
-// ÉãÏñÍ·¼ì²â½á¹û½á¹¹
+// æ‘„åƒå¤´æ£€æµ‹ç»“æœç»“æ„
 struct CameraDetectionResult {
     std::vector<std::string> available_cameras;
     std::string mode;
@@ -20,7 +18,7 @@ struct CameraDetectionResult {
     CameraInputMode input_mode;
 };
 
-// ³éÏóÊäÈëÔ´½Ó¿Ú
+// æŠ½è±¡è¾“å…¥æºæ¥å£
 class CameraInputSource {
 public:
     virtual ~CameraInputSource() = default;
@@ -29,7 +27,7 @@ public:
     virtual std::string get_mode_name() const = 0;
 };
 
-// USBÉãÏñÍ·ÊäÈëÔ´
+// USBæ‘„åƒå¤´è¾“å…¥æº
 class USBCameraSource : public CameraInputSource {
 public:
     CameraDetectionResult detect_cameras() override;
@@ -41,25 +39,8 @@ private:
     bool test_camera_simple(const std::string& camera_name);
 };
 
-// RTSPÁ÷ÊäÈëÔ´
-class RTSPCameraSource : public CameraInputSource {
-public:
-    RTSPCameraSource(const std::vector<std::string>& rtsp_urls);
-    CameraDetectionResult detect_cameras() override;
-    bool test_camera_connection(const std::string& rtsp_url) override;
-    std::string get_mode_name() const override { return "RTSP"; }
-
-private:
-    std::vector<std::string> rtsp_urls_;
-    bool test_rtsp_connection(const std::string& rtsp_url);
-};
-
-// ÊäÈëÔ´¹¤³§
+// è¾“å…¥æºå·¥å‚
 class CameraSourceFactory {
 public:
     static std::unique_ptr<CameraInputSource> create_usb_source();
-    static std::unique_ptr<CameraInputSource> create_rtsp_source(
-        const std::vector<std::string>& rtsp_urls);
-    static std::unique_ptr<CameraInputSource> create_source_from_config(
-        CameraInputMode mode, const std::vector<std::string>& config_params = {});
 };

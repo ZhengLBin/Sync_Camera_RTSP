@@ -1,0 +1,4 @@
+{
+    "cmake.useCMakePresets": "never",
+    "cmake.generator": "Ninja"
+}

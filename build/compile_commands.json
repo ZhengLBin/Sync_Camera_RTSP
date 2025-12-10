@@ -1,0 +1,26 @@
+[
+{
+  "directory": "D:/_DesktopMoveHere/Leji_proj/sync_camera/build",
+  "command": "F:\\VSide\\VC\\Tools\\MSVC\\14.39.33519\\bin\\Hostx64\\x64\\cl.exe  /nologo /TP -IF:\\ffmpeg-7.0.2-full_build-shared\\include -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\include\\gstreamer-1.0\" -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\include\\glib-2.0\" -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\lib\\glib-2.0\\include\" /DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Ob0 /Od /RTC1 -std:c++20 -Zi /FoCMakeFiles\\sync_camera.dir\\src\\main.cpp.obj /FdTARGET_COMPILE_PDB /FS -c D:\\_DesktopMoveHere\\Leji_proj\\sync_camera\\src\\main.cpp",
+  "file": "D:\\_DesktopMoveHere\\Leji_proj\\sync_camera\\src\\main.cpp",
+  "output": "CMakeFiles\\sync_camera.dir\\src\\main.cpp.obj"
+},
+{
+  "directory": "D:/_DesktopMoveHere/Leji_proj/sync_camera/build",
+  "command": "F:\\VSide\\VC\\Tools\\MSVC\\14.39.33519\\bin\\Hostx64\\x64\\cl.exe  /nologo /TP -IF:\\ffmpeg-7.0.2-full_build-shared\\include -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\include\\gstreamer-1.0\" -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\include\\glib-2.0\" -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\lib\\glib-2.0\\include\" /DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Ob0 /Od /RTC1 -std:c++20 -Zi /FoCMakeFiles\\sync_camera.dir\\src\\multi_camera_sync.cpp.obj /FdTARGET_COMPILE_PDB /FS -c D:\\_DesktopMoveHere\\Leji_proj\\sync_camera\\src\\multi_camera_sync.cpp",
+  "file": "D:\\_DesktopMoveHere\\Leji_proj\\sync_camera\\src\\multi_camera_sync.cpp",
+  "output": "CMakeFiles\\sync_camera.dir\\src\\multi_camera_sync.cpp.obj"
+},
+{
+  "directory": "D:/_DesktopMoveHere/Leji_proj/sync_camera/build",
+  "command": "F:\\VSide\\VC\\Tools\\MSVC\\14.39.33519\\bin\\Hostx64\\x64\\cl.exe  /nologo /TP -IF:\\ffmpeg-7.0.2-full_build-shared\\include -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\include\\gstreamer-1.0\" -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\include\\glib-2.0\" -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\lib\\glib-2.0\\include\" /DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Ob0 /Od /RTC1 -std:c++20 -Zi /FoCMakeFiles\\sync_camera.dir\\src\\tcp_streamer.cpp.obj /FdTARGET_COMPILE_PDB /FS -c D:\\_DesktopMoveHere\\Leji_proj\\sync_camera\\src\\tcp_streamer.cpp",
+  "file": "D:\\_DesktopMoveHere\\Leji_proj\\sync_camera\\src\\tcp_streamer.cpp",
+  "output": "CMakeFiles\\sync_camera.dir\\src\\tcp_streamer.cpp.obj"
+},
+{
+  "directory": "D:/_DesktopMoveHere/Leji_proj/sync_camera/build",
+  "command": "F:\\VSide\\VC\\Tools\\MSVC\\14.39.33519\\bin\\Hostx64\\x64\\cl.exe  /nologo /TP -IF:\\ffmpeg-7.0.2-full_build-shared\\include -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\include\\gstreamer-1.0\" -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\include\\glib-2.0\" -I\"C:\\Program Files\\gstreamer\\1.0\\msvc_x86_64\\lib\\glib-2.0\\include\" /DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Ob0 /Od /RTC1 -std:c++20 -Zi /FoCMakeFiles\\sync_camera.dir\\src\\camera_input_source.cpp.obj /FdTARGET_COMPILE_PDB /FS -c D:\\_DesktopMoveHere\\Leji_proj\\sync_camera\\src\\camera_input_source.cpp",
+  "file": "D:\\_DesktopMoveHere\\Leji_proj\\sync_camera\\src\\camera_input_source.cpp",
+  "output": "CMakeFiles\\sync_camera.dir\\src\\camera_input_source.cpp.obj"
+}
+]

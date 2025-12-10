@@ -50,26 +50,13 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
     cam.index = index;
     cam.device_path = device_path;
 
-    std::cout << "\n=== Initializing Camera " << index << " ===" << std::endl;
-    std::cout << "Device path: " << device_path << std::endl;
-
-    bool is_rtsp = (device_path.find("rtsp://") == 0);
-    const AVInputFormat* input_format = is_rtsp ? nullptr : av_find_input_format("dshow");
+    const AVInputFormat* input_format = av_find_input_format("dshow");
     AVDictionary* options = nullptr;
 
-    if (is_rtsp) {
-        av_dict_set(&options, "rtsp_transport", "tcp", 0);
-        av_dict_set(&options, "stimeout", "5000000", 0);
-        av_dict_set(&options, "buffer_size", "2048000", 0);
-        av_dict_set(&options, "rtsp_flags", "prefer_tcp", 0);
-        av_dict_set(&options, "allowed_media_types", "video", 0);
-
-        // 强制独立连接
-        av_dict_set(&options, "reuse", "0", 0);
-        av_dict_set(&options, "multiple_requests", "1", 0);
-
-        std::cout << "RTSP stream configuration applied" << std::endl;
-    }
+    av_dict_set(&options, "video_size", "640x480", 0);
+    av_dict_set(&options, "framerate", "30", 0);
+    av_dict_set(&options, "rtbufsize", "100M", 0);
+    av_dict_set(&options, "pixel_format", "yuyv422", 0);
 
     int ret = avformat_open_input(&cam.fmt_ctx, device_path.c_str(), input_format, &options);
 
@@ -89,37 +76,11 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
         return false;
     }
 
-    // 详细分析流信息
-    std::cout << "=== Stream Analysis for Camera " << index << " ===" << std::endl;
-    std::cout << "Total streams: " << cam.fmt_ctx->nb_streams << std::endl;
-    std::cout << "Format name: " << (cam.fmt_ctx->iformat ? cam.fmt_ctx->iformat->name : "unknown") << std::endl;
-
-    // 显示metadata
-    AVDictionaryEntry* tag = nullptr;
-    std::cout << "Metadata:" << std::endl;
-    while ((tag = av_dict_get(cam.fmt_ctx->metadata, "", tag, AV_DICT_IGNORE_SUFFIX))) {
-        std::cout << "  " << tag->key << " = " << tag->value << std::endl;
-    }
-
-    for (unsigned int i = 0; i < cam.fmt_ctx->nb_streams; i++) {
-        AVStream* stream = cam.fmt_ctx->streams[i];
-        const char* media_type = av_get_media_type_string(stream->codecpar->codec_type);
-        std::cout << "  Stream " << i << ": " << (media_type ? media_type : "unknown");
-
-        if (stream->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
-            std::cout << " (" << stream->codecpar->width << "x" << stream->codecpar->height << ")";
-            const char* codec_name = avcodec_get_name(stream->codecpar->codec_id);
-            std::cout << " codec: " << (codec_name ? codec_name : "unknown");
-        }
-        std::cout << std::endl;
-    }
-
     // 查找视频流
     cam.video_stream_idx = -1;
     for (unsigned int i = 0; i < cam.fmt_ctx->nb_streams; i++) {
         if (cam.fmt_ctx->streams[i]->codecpar->codec_type == AVMEDIA_TYPE_VIDEO) {
             cam.video_stream_idx = i;
-            std::cout << "Selected video stream: " << i << std::endl;
             break;
         }
     }
@@ -168,19 +129,9 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
         return false;
     }
 
-    // 根据设备类型确定目标分辨率
-    int target_width, target_height;
-
-    if (is_rtsp) {
-        target_width = 1280;
-        target_height = 720;
-        std::cout << "RTSP camera " << index << " - target resolution: 1280x720" << std::endl;
-    }
-    else {  // USB
-        target_width = 640;
-        target_height = 480;
-        std::cout << "USB camera " << index << " - target resolution: 640x480" << std::endl;
-    }
+    // USB摄像头固定使用640x480分辨率
+    int target_width = 640;
+    int target_height = 480;
 
     int yuv_size = av_image_get_buffer_size(AV_PIX_FMT_YUV420P, target_width, target_height, 32);
     cam.yuv_buffer = (uint8_t*)av_malloc(yuv_size);
@@ -205,12 +156,6 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
         std::cerr << "Could not create SWS context for camera " << index << std::endl;
         return false;
     }
-
-    std::cout << "Camera " << index << " fully initialized: "
-        << cam.codec_ctx->width << "x" << cam.codec_ctx->height
-        << " -> " << target_width << "x" << target_height
-        << " format:" << av_get_pix_fmt_name(cam.codec_ctx->pix_fmt) << " -> YUV420P" << std::endl;
-    std::cout << "=================================" << std::endl;
 
     return true;
 }
@@ -259,7 +204,6 @@ void MultiCameraCapture::stop() {
     }
 }
 
-
 void MultiCameraCapture::capture_thread(int camera_index) {
     if (camera_index < 0 || static_cast<size_t>(camera_index) >= cameras_.size()) return;
 
@@ -267,12 +211,13 @@ void MultiCameraCapture::capture_thread(int camera_index) {
     AVPacket* packet = av_packet_alloc();
     if (!packet) return;
 
-    bool is_rtsp = (cam.device_path.find("rtsp://") == 0);
-
-
-    // 🔍 添加帧内容校验
     uint64_t last_frame_checksum = 0;
     int identical_frame_count = 0;
+    int frame_captured_count = 0;
+    int read_failed_count = 0;
+    
+    auto last_capture_time = std::chrono::steady_clock::now();
+    int64_t total_interval_us = 0;
 
     while (running_) {
         if (!capture_active_.load()) {
@@ -283,7 +228,12 @@ void MultiCameraCapture::capture_thread(int camera_index) {
         int ret = av_read_frame(cam.fmt_ctx, packet);
         if (ret < 0) {
             av_packet_unref(packet);
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            read_failed_count++;
+            if (read_failed_count % 1000 == 0) {
+                char error_buf[AV_ERROR_MAX_STRING_SIZE];
+                av_strerror(ret, error_buf, AV_ERROR_MAX_STRING_SIZE);
+                std::cerr << "Camera " << camera_index << " read failed " << read_failed_count << " times: " << error_buf << std::endl;
+            }
             continue;
         }
 
@@ -331,8 +281,16 @@ void MultiCameraCapture::capture_thread(int camera_index) {
                         last_frame_checksum = current_checksum;
                     }
 
-                    // 统一的同步模式处理 (USB和RTSP都走同步)
-                    int64_t timestamp_us = av_gettime(); // 统一使用系统时间
+                    // USB摄像头同步模式处理
+                    int64_t timestamp_us = av_gettime();
+                    
+                    // 计算采集间隔
+                    auto now = std::chrono::steady_clock::now();
+                    auto interval_us = std::chrono::duration_cast<std::chrono::microseconds>(now - last_capture_time).count();
+                    last_capture_time = now;
+                    if (frame_captured_count > 0) {
+                        total_interval_us += interval_us;
+                    }
 
                     // 克隆帧用于同步队列
                     AVFrame* cloned_frame = clone_frame(cam.yuv_frame);
@@ -341,7 +299,6 @@ void MultiCameraCapture::capture_thread(int camera_index) {
                         timestamped_frame.frame = cloned_frame;
                         timestamped_frame.timestamp_us = timestamp_us;
 
-                        // 添加到同步队列
                         {
                             std::lock_guard<std::mutex> lock(queue_mutex_);
 
@@ -352,83 +309,99 @@ void MultiCameraCapture::capture_thread(int camera_index) {
                             }
 
                             frame_queues_[camera_index].push_back(timestamped_frame);
+                            frame_captured_count++;
                         }
 
+                        if (frame_captured_count % 300 == 1) {
+                            std::cout << "[Camera " << camera_index << "] " << frame_captured_count << " frames" << std::endl;
+                        }
+                    } else {
+                        if (frame_captured_count % 100 == 1) {
+                            std::cerr << "Camera " << camera_index << " failed to clone frame!" << std::endl;
+                        }
                     }
                 }
             }
         }
     }
 
-    std::cout << "Capture thread stopped for camera " << camera_index << std::endl;
+    std::cout << "[Camera " << camera_index << "] Total: " << frame_captured_count << " frames" << std::endl;
+
     av_packet_free(&packet);
 }
 
 void MultiCameraCapture::sync_loop() {
-    const auto tick = std::chrono::milliseconds(3);
+    const auto tick = std::chrono::milliseconds(1);
     const size_t N = frame_queues_.size();
     if (N == 0) return;
 
-    const int64_t tolerance = config_.timestamp_tolerance_us;
+    const int64_t tolerance = config_.sync_threshold_us;
+    int synced_count = 0;
 
     while (running_) {
-        std::this_thread::sleep_for(tick);
-
-        std::vector<AVFrame*> group(N, nullptr);
-
+        // 批量处理5帧,减少锁竞争但不过度缓冲
         {
             std::lock_guard<std::mutex> lock(queue_mutex_);
-
-            // 检查是否所有队列都有帧
-            bool all_have_frames = true;
-            std::vector<int64_t> heads(N);
-
-            for (size_t i = 0; i < N; ++i) {
-                if (frame_queues_[i].empty()) {
-                    all_have_frames = false;
-                    break;
-                }
-                heads[i] = frame_queues_[i].front().timestamp_us;
-            }
-
-            if (!all_have_frames) continue;
-
-            int64_t t_min = *std::min_element(heads.begin(), heads.end());
-            int64_t t_max = *std::max_element(heads.begin(), heads.end());
-
-            if (t_max - t_min <= tolerance) {
-                // 同步成功 - 提取帧
-                for (size_t i = 0; i < N; ++i) {
-                    auto& timestamped_frame = frame_queues_[i].front();
-                    group[i] = timestamped_frame.frame;
-                    frame_queues_[i].pop_front();
-                }
-
-                // 限制同步队列大小
-                while (synced_frame_queue_.size() >= config_.max_sync_queue_size) {
-                    auto& old_frames = synced_frame_queue_.front();
-                    for (auto* f : old_frames) free_cloned_frame(&f);
-                    synced_frame_queue_.pop_front();
-                }
-
-                synced_frame_queue_.push_back(group);
-            }
-            else {
-                // 时间戳不同步 - 丢弃过早的帧
-                int64_t drop_threshold = t_max - tolerance;
+            
+            // 批量同步5帧,保持同步队列有适度缓冲
+            int batch_count = 0;
+            while (batch_count < 5 && synced_frame_queue_.size() < config_.max_sync_queue_size) {
+                std::vector<AVFrame*> group(N, nullptr);
+                bool all_have_frames = true;
+                std::vector<int64_t> heads(N);
 
                 for (size_t i = 0; i < N; ++i) {
-                    while (!frame_queues_[i].empty() &&
-                        frame_queues_[i].front().timestamp_us < drop_threshold) {
+                    if (frame_queues_[i].empty()) {
+                        all_have_frames = false;
+                        break;
+                    }
+                    heads[i] = frame_queues_[i].front().timestamp_us;
+                }
 
-                        auto& old_timestamped_frame = frame_queues_[i].front();
-                        AVFrame* old_frame = old_timestamped_frame.frame;
-                        free_cloned_frame(&old_frame);
+                if (!all_have_frames) {
+                    break;  // 等待下次循环
+                }
+
+                int64_t t_min = *std::min_element(heads.begin(), heads.end());
+                int64_t t_max = *std::max_element(heads.begin(), heads.end());
+
+                if (t_max - t_min <= tolerance) {
+                    // 时间戳匹配,同步这组帧
+                    for (size_t i = 0; i < N; ++i) {
+                        auto& timestamped_frame = frame_queues_[i].front();
+                        group[i] = timestamped_frame.frame;
                         frame_queues_[i].pop_front();
                     }
+
+                    synced_frame_queue_.push_back(group);
+                    synced_count++;
+                    batch_count++;
+                    
+                    if (synced_count % 300 == 1) {
+                        std::cout << "[Sync] " << synced_count << " groups synced" << std::endl;
+                    }
+                }
+                else {
+                    // 时间戳不匹配,丢弃过旧的帧
+                    int64_t drop_threshold = t_max - tolerance;
+
+                    for (size_t i = 0; i < N; ++i) {
+                        while (!frame_queues_[i].empty() &&
+                            frame_queues_[i].front().timestamp_us < drop_threshold) {
+
+                            auto& old_timestamped_frame = frame_queues_[i].front();
+                            AVFrame* old_frame = old_timestamped_frame.frame;
+                            free_cloned_frame(&old_frame);
+                            frame_queues_[i].pop_front();
+                        }
+                    }
+                    break;  // 丢帧后重新检查
                 }
             }
-        }
+        } // lock自动释放
+        
+        // sleep 5ms,每秒最多同步200次,每次最多10帧 = 2000帧/秒 >> 60帧/秒
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
 }
 
@@ -508,4 +481,3 @@ size_t MultiCameraCapture::get_sync_queue_size() const {
 size_t MultiCameraCapture::get_camera_count() const {
     return camera_count_;
 }
-

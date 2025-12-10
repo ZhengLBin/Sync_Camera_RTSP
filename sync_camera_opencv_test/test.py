@@ -6,7 +6,7 @@ Camera类测试脚本（支持H.264解码和动态分辨率）
 
 import cv2
 import time
-from camera import Camera
+from usbCamera import Camera
 
 def test_server_detection():
     """服务端检测测试"""
@@ -86,18 +86,36 @@ def test_basic_usage():
     
     # 显示每个摄像头的分辨率
     print("\n摄像头分辨率:")
-    for name, cam_info in info['cameras'].items():
-        resolution = cam_info.get('resolution', (0, 0))
-        print(f"  {name.upper()}: {resolution[0]}x{resolution[1]}")
+    # usbCamera.py 的 get_camera_info 不返回 resolution，这里使用 camera 实例的 width/height
+    width, height = camera.width, camera.height
+    for name in info['cameras'].keys():
+        print(f"  {name.upper()}: {width}x{height}")
     
     print("\n开始读取测试...")
+    # 获取第一个可用的摄像头名称
+    available_cameras = list(info['cameras'].keys())
+    if not available_cameras:
+        print("✗ 没有可用的摄像头")
+        return False
+        
+    test_cam = available_cameras[0]
+    print(f"测试摄像头: {test_cam}")
+
+    success_count = 0
     for i in range(10):
-        success, frame = camera.read("left")
+        success, frame = camera.read(test_cam)
         if success:
+            success_count += 1
             print(f"✓ 第{i+1}帧读取成功 - 尺寸: {frame.shape}")
         else:
             print(f"✗ 第{i+1}帧读取失败")
         time.sleep(0.1)
+    
+    # 显示FPS统计
+    print(f"\n读取统计:")
+    info = camera.get_camera_info()
+    for name, cam_info in info['cameras'].items():
+        print(f"  {name.upper()}: {cam_info['frames']} 帧, {cam_info['fps']:.1f} fps")
     
     camera.close()
     return True
@@ -123,18 +141,29 @@ def test_multi_camera_display():
         
         # 显示分辨率信息
         print("\n分辨率信息:")
-        for name, cam_info in info['cameras'].items():
-            resolution = cam_info.get('resolution', (0, 0))
-            print(f"  {name.upper()}: {resolution[0]}x{resolution[1]}")
+        width, height = camera.width, camera.height
+        for name in info['cameras'].keys():
+            print(f"  {name.upper()}: {width}x{height}")
         
         time.sleep(1)
         
         frame_count = 0
-        fps_counter = {}
+        last_frame_counters = {}  # 记录上一次的帧计数
+        fps_values = {}  # 存储最新的FPS值用于持续显示
         last_fps_time = time.time()
+        last_fps_print_time = time.time()  # 用于终端输出控制
+        no_data_count = 0  # 记录连续无数据次数
+        
+        # 初始化上一次的帧计数
+        for name in info['cameras'].keys():
+            last_frame_counters[name] = camera.frame_counters.get(name, 0)
+            fps_values[name] = 0.0
         
         while True:
             frames = camera.read_all()
+            
+            current_time = time.time()
+            elapsed = current_time - last_fps_time
             
             display_count = 0
             for name, frame in frames.items():
@@ -142,29 +171,40 @@ def test_multi_camera_display():
                     # 添加分辨率和FPS信息到图像上
                     h, w = frame.shape[:2]
                     
-                    # 计算FPS
-                    if name not in fps_counter:
-                        fps_counter[name] = 0
-                    fps_counter[name] += 1
-                    
-                    current_time = time.time()
-                    if current_time - last_fps_time >= 1.0:
-                        fps = fps_counter[name] / (current_time - last_fps_time)
-                        # 在图像上显示信息
-                        cv2.putText(frame, f"{name.upper()} {w}x{h} @ {fps:.1f}fps", 
-                                  (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    # 始终显示FPS信息（使用最新值）
+                    fps_text = f"{name.upper()} {w}x{h} @ {fps_values[name]:.1f}fps"
+                    cv2.putText(frame, fps_text, (10, 30), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
                     
                     window_name = f"{name.upper()} Camera"
                     cv2.imshow(window_name, frame)
                     display_count += 1
             
-            # 重置FPS计数器
-            if time.time() - last_fps_time >= 1.0:
-                fps_counter = {}
-                last_fps_time = time.time()
+            # 每秒计算一次FPS：基于接收线程的实际帧计数
+            if elapsed >= 1.0:
+                for name in info['cameras'].keys():
+                    current_count = camera.frame_counters.get(name, 0)
+                    frame_diff = current_count - last_frame_counters[name]
+                    fps = frame_diff / elapsed
+                    fps_values[name] = fps
+                    last_frame_counters[name] = current_count
+                last_fps_time = current_time
+            
+            # 每5秒在终端输出一次FPS统计
+            if current_time - last_fps_print_time >= 5.0:
+                if fps_values:
+                    print("\n[FPS Statistics]")
+                    for name, fps in fps_values.items():
+                        print(f"  {name.upper()}: {fps:.1f} fps")
+                last_fps_print_time = time.time()
             
             if display_count == 0:
-                print("⏳ 暂无图像数据")
+                no_data_count += 1
+                # 只在刚开始无数据或每30次无数据时输出一次
+                if no_data_count <= 3 or no_data_count % 30 == 0:
+                    print(f"⏳ 等待图像数据... ({no_data_count})")
+            else:
+                no_data_count = 0  # 重置计数
             
             frame_count += 1
             
@@ -192,9 +232,9 @@ def test_synchronized_capture():
     
     info = camera.get_camera_info()
     print("分辨率信息:")
-    for name, cam_info in info['cameras'].items():
-        resolution = cam_info.get('resolution', (0, 0))
-        print(f"  {name.upper()}: {resolution[0]}x{resolution[1]}")
+    width, height = camera.width, camera.height
+    for name in info['cameras'].keys():
+        print(f"  {name.upper()}: {width}x{height}")
     
     print("\n测试同步读取...")
     sync_success_count = 0
@@ -216,9 +256,9 @@ def test_synchronized_capture():
     
     info = camera.get_camera_info()
     print("\n最终统计:")
+    width, height = camera.width, camera.height
     for name, cam_info in info['cameras'].items():
-        resolution = cam_info.get('resolution', (0, 0))
-        print(f"  {name.upper()}: {cam_info['frames']} frames ({cam_info['fps']:.1f} fps) @ {resolution[0]}x{resolution[1]}")
+        print(f"  {name.upper()}: {cam_info['frames']} frames ({cam_info['fps']:.1f} fps) @ {width}x{height}")
     
     camera.close()
     return True
@@ -247,10 +287,10 @@ def test_performance_monitoring():
             info = camera.get_camera_info()
             print(f"\n⏱  运行时间: {info['runtime']:.1f}s")
             print(f"📊 总帧数: {info['total_frames']}")
+            width, height = camera.width, camera.height
             for name, cam_info in info['cameras'].items():
                 status = "✓" if cam_info['has_data'] else "✗"
-                resolution = cam_info.get('resolution', (0, 0))
-                print(f"   {status} {name.upper()}: {cam_info['fps']:.1f} fps @ {resolution[0]}x{resolution[1]}")
+                print(f"   {status} {name.upper()}: {cam_info['fps']:.1f} fps @ {width}x{height}")
         
         time.sleep(1)
     

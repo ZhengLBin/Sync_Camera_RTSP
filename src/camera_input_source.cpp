@@ -99,76 +99,9 @@ std::vector<std::string> USBCameraSource::scan_usb_cameras() {
 }
 
 //==============================================================================
-// RTSPCameraSource 实现
-//==============================================================================
-
-RTSPCameraSource::RTSPCameraSource(const std::vector<std::string>& rtsp_urls)
-    : rtsp_urls_(rtsp_urls) {
-}
-
-CameraDetectionResult RTSPCameraSource::detect_cameras() {
-    CameraDetectionResult result;
-    result.input_mode = CameraInputMode::RTSP_STREAMS;
-
-    std::vector<std::string> working_cameras;
-    for (const auto& url : rtsp_urls_) {
-        if (test_camera_connection(url)) {
-            working_cameras.push_back(url);
-        }
-    }
-
-    result.available_cameras = working_cameras;
-    size_t camera_count = working_cameras.size();
-
-    if (camera_count >= 4) {
-        result.mode = "quad";
-        result.expected_fps = 25;
-        result.available_cameras.resize(4);
-    }
-    else if (camera_count >= 3) {
-        result.mode = "triple";
-        result.expected_fps = 25;
-        result.available_cameras.resize(3);
-    }
-    else if (camera_count >= 2) {
-        result.mode = "dual";
-        result.expected_fps = 25;
-        result.available_cameras.resize(2);
-    }
-    else {
-        result.mode = "none";
-        result.expected_fps = 0;
-    }
-
-    return result;
-}
-
-bool RTSPCameraSource::test_camera_connection(const std::string& rtsp_url) {
-    AVFormatContext* test_fmt_ctx = nullptr;
-    AVDictionary* options = nullptr;
-
-    av_dict_set(&options, "rtsp_transport", "tcp", 0);
-    av_dict_set(&options, "stimeout", "3000000", 0);
-
-    int ret = avformat_open_input(&test_fmt_ctx, rtsp_url.c_str(), nullptr, &options);
-    av_dict_free(&options);
-
-    if (ret == 0) {
-        avformat_close_input(&test_fmt_ctx);
-        return true;
-    }
-    return false;
-}
-
-//==============================================================================
 // CameraSourceFactory 实现
 //==============================================================================
 
 std::unique_ptr<CameraInputSource> CameraSourceFactory::create_usb_source() {
     return std::make_unique<USBCameraSource>();
-}
-
-std::unique_ptr<CameraInputSource> CameraSourceFactory::create_rtsp_source(
-    const std::vector<std::string>& rtsp_urls) {
-    return std::make_unique<RTSPCameraSource>(rtsp_urls);
 }

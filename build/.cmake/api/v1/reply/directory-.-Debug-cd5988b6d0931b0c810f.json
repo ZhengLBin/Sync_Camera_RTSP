@@ -1,0 +1,87 @@
+{
+	"backtraceGraph" : 
+	{
+		"commands" : 
+		[
+			"install"
+		],
+		"files" : 
+		[
+			"CMakeLists.txt"
+		],
+		"nodes" : 
+		[
+			{
+				"file" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 210,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 211,
+				"parent" : 0
+			},
+			{
+				"command" : 0,
+				"file" : 0,
+				"line" : 212,
+				"parent" : 0
+			}
+		]
+	},
+	"installers" : 
+	[
+		{
+			"backtrace" : 1,
+			"component" : "Unspecified",
+			"destination" : "bin",
+			"paths" : 
+			[
+				"sync_camera.exe"
+			],
+			"targetId" : "sync_camera::@6890427a1f51a3e7e1df",
+			"targetIndex" : 0,
+			"type" : "target"
+		},
+		{
+			"backtrace" : 2,
+			"component" : "Unspecified",
+			"destination" : "bin",
+			"paths" : 
+			[
+				"F:/ffmpeg-7.0.2-full_build-shared/bin/avcodec-61.dll",
+				"F:/ffmpeg-7.0.2-full_build-shared/bin/avdevice-61.dll",
+				"F:/ffmpeg-7.0.2-full_build-shared/bin/avfilter-10.dll",
+				"F:/ffmpeg-7.0.2-full_build-shared/bin/avformat-61.dll",
+				"F:/ffmpeg-7.0.2-full_build-shared/bin/avutil-59.dll",
+				"F:/ffmpeg-7.0.2-full_build-shared/bin/postproc-58.dll",
+				"F:/ffmpeg-7.0.2-full_build-shared/bin/swresample-5.dll",
+				"F:/ffmpeg-7.0.2-full_build-shared/bin/swscale-8.dll"
+			],
+			"type" : "file"
+		},
+		{
+			"backtrace" : 3,
+			"component" : "Unspecified",
+			"destination" : "bin/gstreamer-1.0",
+			"paths" : 
+			[
+				{
+					"from" : "build/gstreamer-1.0",
+					"to" : "."
+				}
+			],
+			"type" : "directory"
+		}
+	],
+	"paths" : 
+	{
+		"build" : ".",
+		"source" : "."
+	}
+}

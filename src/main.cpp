@@ -16,92 +16,9 @@ void signal_handler(int signal) {
     }
 }
 
-CameraInputMode select_camera_mode() {
-    std::cout << "\n=== Camera Mode Selection ===" << std::endl;
-    std::cout << "1. USB Cameras" << std::endl;
-    std::cout << "2. RTSP Streams" << std::endl;
-    std::cout << "Select (1-2): ";
-
-    int choice;
-    while (true) {
-        std::cin >> choice;
-        if (std::cin.fail()) {
-            std::cin.clear();
-            std::cin.ignore(10000, '\n');
-            std::cout << "Invalid input. Enter 1 or 2: ";
-            continue;
-        }
-        if (choice == 1) return CameraInputMode::USB_CAMERAS;
-        else if (choice == 2) return CameraInputMode::RTSP_STREAMS;
-        else std::cout << "Invalid choice. Enter 1 or 2: ";
-    }
-}
-
-std::vector<std::string> configure_rtsp_urls() {
-    std::cout << "\n=== RTSP Configuration ===" << std::endl;
-    std::cout << "1. Use default URLs (192.168.16.240)" << std::endl;
-    std::cout << "2. Enter custom URLs" << std::endl;
-    std::cout << "Select (1-2): ";
-
-    int choice;
-    std::cin >> choice;
-
-    std::vector<std::string> urls;
-    if (choice == 1) {
-        urls = {
-            "rtsp://admin:haikang123@192.168.16.240:554/Streaming/Channels/101?transportmode=unicast",
-            "rtsp://admin:haikang123@192.168.16.240:554/Streaming/Channels/201?transportmode=unicast"
-        };
-    }
-    else {
-        std::cout << "Enter number of streams (2-4): ";
-        int count;
-        std::cin >> count;
-        count = std::max(2, std::min(4, count));
-
-        std::cin.ignore();
-        for (int i = 0; i < count; ++i) {
-            std::string url;
-            std::cout << "Enter RTSP URL " << (i + 1) << ": ";
-            std::getline(std::cin, url);
-            if (!url.empty()) {
-                urls.push_back(url);
-            }
-        }
-    }
-
-    // 🔍 详细验证RTSP URL
-    std::cout << "\n=== RTSP URLs Verification ===" << std::endl;
-    for (size_t i = 0; i < urls.size(); ++i) {
-        std::cout << "Camera " << i << ": " << urls[i] << std::endl;
-
-        // 检查URL是否真的不同
-        if (i > 0) {
-            for (size_t j = 0; j < i; ++j) {
-                if (urls[i] == urls[j]) {
-                    std::cerr << "⚠️  WARNING: Camera " << i << " and Camera " << j << " have IDENTICAL URLs!" << std::endl;
-                }
-            }
-        }
-    }
-    std::cout << "===============================" << std::endl;
-
-    return urls;
-}
-
-CameraDetectionResult detect_cameras(CameraInputMode mode) {
-    std::unique_ptr<CameraInputSource> source;
-
-    if (mode == CameraInputMode::USB_CAMERAS) {
-        std::cout << "Detecting USB cameras..." << std::endl;
-        source = CameraSourceFactory::create_usb_source();
-    }
-    else {
-        std::cout << "Configuring RTSP streams..." << std::endl;
-        auto rtsp_urls = configure_rtsp_urls();
-        source = CameraSourceFactory::create_rtsp_source(rtsp_urls);
-    }
-
+CameraDetectionResult detect_cameras() {
+    std::cout << "Detecting USB cameras..." << std::endl;
+    auto source = CameraSourceFactory::create_usb_source();
     if (!source) return CameraDetectionResult{};
     return source->detect_cameras();
 }
@@ -112,9 +29,9 @@ std::unique_ptr<MultiCameraCapture> create_camera_capture(const CameraDetectionR
         config.target_fps = detection.expected_fps;
 
         if (detection.mode == "dual") {
-            config.max_queue_size = 20;
-            config.max_sync_queue_size = 8;
-            config.sync_threshold_us = 1000000;
+            config.max_queue_size = 15;      // 采集队列
+            config.max_sync_queue_size = 10; // 同步队列最多10帧(约330ms)
+            config.sync_threshold_us = 500000;
         }
         else if (detection.mode == "triple") {
             config.max_queue_size = 35;
@@ -146,19 +63,12 @@ std::vector<std::unique_ptr<TCPStreamer>> create_streamers(const CameraDetection
     std::vector<std::unique_ptr<TCPStreamer>> streamers;
     size_t camera_count = detection.available_cameras.size();
 
-    // 根据输入模式选择分辨率
-    int width, height;
-    if (detection.input_mode == CameraInputMode::RTSP_STREAMS) {
-        width = 1280;
-        height = 720;
-    }
-    else {
-        width = 640;
-        height = 480;
-    }
+    // USB摄像头固定使用640x480分辨率
+    int width = 640;
+    int height = 480;
 
-    std::vector<std::string> names = { "left", "right", "third", "fourth" };
-    const int base_port = 6010;
+    std::vector<std::string> names = { "front", "back", "left", "right" };
+    const int base_port = 5010;
 
     for (size_t i = 0; i < camera_count; ++i) {
         int port = base_port + static_cast<int>(i);
@@ -169,7 +79,6 @@ std::vector<std::unique_ptr<TCPStreamer>> create_streamers(const CameraDetection
             return {};
         }
 
-        std::cout << "Streamer " << i << " (" << names[i] << ") on port " << port << std::endl;
         streamers.push_back(std::move(streamer));
     }
 
@@ -180,12 +89,11 @@ int main() {
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 
-    av_log_set_level(AV_LOG_ERROR);
+    av_log_set_level(AV_LOG_QUIET);
     avdevice_register_all();
 
-    // 选择模式并检测摄像头
-    CameraInputMode mode = select_camera_mode();
-    auto detection = detect_cameras(mode);
+    // 检测USB摄像头
+    auto detection = detect_cameras();
 
     if (detection.mode == "none") {
         std::cerr << "No working cameras found" << std::endl;
@@ -193,7 +101,6 @@ int main() {
     }
 
     std::cout << "Detected " << detection.available_cameras.size() << " cameras: " << detection.mode << std::endl;
-
 
     // 创建流传输器
     auto streamers = create_streamers(detection);
@@ -218,49 +125,56 @@ int main() {
         const auto frame_interval = std::chrono::milliseconds(1000 / detection.expected_fps);
         auto last_output_time = start_time;
         uint64_t frame_count = 0;
+        uint64_t get_frame_attempts = 0;
+        uint64_t successful_sends = 0;
 
         std::cout << "Starting " << detection.mode << " camera system..." << std::endl;
-
 
         camera_capture->start();
         cameras_running = true;
 
-        // 🚀 RTSP直推模式下，主循环只处理非RTSP流
         while (!g_should_exit.load()) {
             if (cameras_running && camera_capture) {
+                auto current_time = std::chrono::steady_clock::now();
+                
+                // 只在需要下一帧时才获取(按30fps节奏)
+                if (current_time - last_output_time < frame_interval) {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+                    continue;
+                }
+                
+                get_frame_attempts++;
                 auto frames = camera_capture->get_sync_yuv420p_frames();
+                size_t expected = camera_capture->get_camera_count();
 
-                if (frames.size() == camera_capture->get_camera_count()) {
-                    auto current_time = std::chrono::steady_clock::now();
-
-                    if (current_time - last_output_time >= frame_interval) {
-                        // 设置PTS
-                        for (size_t i = 0; i < frames.size(); ++i) {
-                            frames[i]->pts = static_cast<int64_t>(frame_count);
-                        }
-
-                        // 发送到流传输器
-                        for (size_t i = 0; i < frames.size() && i < streamers.size(); ++i) {
-                            streamers[i]->send_frame(frames[i]);
-                        }
-
-                        frame_count++;
-                        last_output_time = current_time;
+                if (frames.size() == expected) {
+                    // 设置PTS
+                    for (size_t i = 0; i < frames.size(); ++i) {
+                        frames[i]->pts = static_cast<int64_t>(frame_count);
                     }
+
+                    // 发送到流传输器
+                    for (size_t i = 0; i < frames.size() && i < streamers.size(); ++i) {
+                        bool sent = streamers[i]->send_frame(frames[i]);
+                        if (sent) successful_sends++;
+                    }
+
+                    frame_count++;
+                    if (frame_count % 300 == 1) {
+                        std::cout << "[Streaming] " << frame_count << " synced frames transmitted" << std::endl;
+                    }
+                    
+                    last_output_time = current_time;
 
                     // 释放帧
                     for (auto* frame : frames) {
                         camera_capture->release_frame(&frame);
                     }
-                }
-                else {
-                    // 释放任何获取到的帧
-                    for (auto* frame : frames) {
-                        if (frame) camera_capture->release_frame(&frame);
-                    }
+                } else {
+                    // 同步队列为空,等待一下
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
                 }
             }
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
 
         if (camera_capture && cameras_running.load()) {
@@ -269,13 +183,13 @@ int main() {
         });
 
     // 显示连接信息
-    std::cout << "\n=== TCP Stream Info ===" << std::endl;
-    std::cout << "Expected FPS: " << detection.expected_fps << std::endl;
-    std::cout << "\nTCP Ports:" << std::endl;
+    std::cout << "\n=== System Ready ===" << std::endl;
+    std::cout << "FPS: " << detection.expected_fps << " | Ports: ";
     for (size_t i = 0; i < streamers.size(); ++i) {
-        std::vector<std::string> labels = { "Left", "Right", "Third", "Fourth" };
-        std::cout << "  " << labels[i] << " camera port: " << streamers[i]->get_port() << std::endl;
+        if (i > 0) std::cout << ", ";
+        std::cout << streamers[i]->get_port();
     }
+    std::cout << std::endl;
 
     // 主循环
     while (!g_should_exit.load()) {

@@ -3,14 +3,13 @@
 #include <cstring>
 #include <sstream>
 
-// ShmFrameBufferÊµÏÖ
 ShmFrameBuffer::ShmFrameBuffer(AVFrame* frame) : pts(frame->pts) {
     size = frame->width * frame->height * 3 / 2;
     data = new uint8_t[size];
 
     uint8_t* dst = data;
 
-    // ¸´ÖÆYÆ½Ãæ
+
     uint8_t* src_y = frame->data[0];
     for (int i = 0; i < frame->height; i++) {
         memcpy(dst, src_y, frame->width);
@@ -18,7 +17,6 @@ ShmFrameBuffer::ShmFrameBuffer(AVFrame* frame) : pts(frame->pts) {
         src_y += frame->linesize[0];
     }
 
-    // ¸´ÖÆUÆ½Ãæ
     uint8_t* src_u = frame->data[1];
     for (int i = 0; i < frame->height / 2; i++) {
         memcpy(dst, src_u, frame->width / 2);
@@ -26,7 +24,6 @@ ShmFrameBuffer::ShmFrameBuffer(AVFrame* frame) : pts(frame->pts) {
         src_u += frame->linesize[1];
     }
 
-    // ¸´ÖÆVÆ½Ãæ
     uint8_t* src_v = frame->data[2];
     for (int i = 0; i < frame->height / 2; i++) {
         memcpy(dst, src_v, frame->width / 2);
@@ -39,7 +36,6 @@ ShmFrameBuffer::~ShmFrameBuffer() {
     delete[] data;
 }
 
-// ¼ò»¯µÄGStreamer³õÊ¼»¯
 bool initialize_gstreamer() {
     if (!gst_is_initialized()) {
         gst_init(nullptr, nullptr);
@@ -48,7 +44,6 @@ bool initialize_gstreamer() {
     return true;
 }
 
-// TCPStreamerÊµÏÖ
 std::atomic<int> TCPStreamer::next_port_{ 5010 };
 std::mutex TCPStreamer::port_allocation_mutex_;
 
@@ -68,6 +63,10 @@ TCPStreamer::TCPStreamer(const std::string& name, int port)
     if (!initialize_gstreamer()) {
         std::cerr << "GStreamer initialization failed" << std::endl;
     }
+
+    std::ostringstream url;
+    url << "tcp://0.0.0.0:" << port_;
+    tcp_url_ = url.str();
 }
 
 TCPStreamer::~TCPStreamer() {
@@ -95,7 +94,6 @@ bool TCPStreamer::init(int width, int height, int fps) {
     push_thread_ = std::thread(&TCPStreamer::push_frame_loop, this);
     initialized_ = true;
 
-    std::cout << "TCPStreamer initialized on port " << port_ << std::endl;
     return true;
 }
 
@@ -108,18 +106,17 @@ int TCPStreamer::allocate_port() {
 bool TCPStreamer::create_pipeline() {
     std::ostringstream pipeline_str;
 
-    // Ö±½ÓÊ¹ÓÃÒÑÖª¿É¹¤×÷µÄ¼òµ¥H.264 pipeline£¬±ÜÃâÊ§°ÜµÄ³¢ÊÔ
+    // æžä½Žå»¶è¿Ÿé…ç½®: å‡å°‘æ‰€æœ‰ç¼“å†²
     pipeline_str << "appsrc name=mysrc "
         << "caps=\"video/x-raw,format=I420,width=" << width_
         << ",height=" << height_ << ",framerate=" << fps_ << "/1\" "
-        << "is-live=true do-timestamp=true block=true max-buffers=3 ! "
-        << "queue ! "
-        << "x264enc tune=zerolatency speed-preset=veryfast ! "
-        << "rtph264pay config-interval=1 pt=96 ! "
-        << "udpsink host=127.0.0.1 port=" << port_ << " sync=false";
-
-
-    std::cout << "Creating H.264 pipeline: " << pipeline_str.str() << std::endl;
+        << "is-live=true do-timestamp=true block=false max-buffers=2 ! "
+        << "x264enc tune=zerolatency speed-preset=superfast bitrate=3000 "
+        << "key-int-max=30 bframes=0 byte-stream=true threads=4 ! "
+        << "h264parse config-interval=-1 ! "
+        << "video/x-h264,stream-format=byte-stream,alignment=au ! "
+        << "queue max-size-buffers=2 max-size-time=0 max-size-bytes=0 ! "
+        << "tcpserversink host=0.0.0.0 port=" << port_ << " sync=false";
 
     GError* error = nullptr;
     pipeline_ = gst_parse_launch(pipeline_str.str().c_str(), &error);
@@ -132,7 +129,6 @@ bool TCPStreamer::create_pipeline() {
         return false;
     }
 
-    // »ñÈ¡appsrcÔªËØ
     appsrc_ = gst_bin_get_by_name(GST_BIN(pipeline_), "mysrc");
     if (!appsrc_) {
         std::cerr << "Failed to get appsrc element" << std::endl;
@@ -141,7 +137,6 @@ bool TCPStreamer::create_pipeline() {
         return false;
     }
 
-    // ÅäÖÃappsrcÊôÐÔ
     GstCaps* caps = gst_caps_new_simple("video/x-raw",
         "format", G_TYPE_STRING, "I420",
         "width", G_TYPE_INT, width_,
@@ -161,17 +156,14 @@ bool TCPStreamer::create_pipeline() {
 
     gst_caps_unref(caps);
 
-    // Á¬½ÓÐÅºÅ
     g_signal_connect(appsrc_, "need-data", G_CALLBACK(need_data_cb), this);
     g_signal_connect(appsrc_, "enough-data", G_CALLBACK(enough_data_cb), this);
 
-    // ÉèÖÃ×ÜÏß¼àÌý
     bus_ = gst_element_get_bus(pipeline_);
     if (bus_) {
         bus_watch_id_ = gst_bus_add_watch(bus_, bus_call, this);
     }
 
-    std::cout << "H.264 pipeline created successfully for port " << port_ << std::endl;
     return true;
 }
 
@@ -210,7 +202,6 @@ bool TCPStreamer::push_frame_to_appsrc() {
         return false;
     }
 
-    // ÉèÖÃ¾«È·µÄÊ±¼ä´Á
     GstClockTime frame_duration = gst_util_uint64_scale(GST_SECOND, 1, fps_);
     GstClockTime timestamp = gst_util_uint64_scale(frame_count_, GST_SECOND, fps_);
 
@@ -218,7 +209,6 @@ bool TCPStreamer::push_frame_to_appsrc() {
     GST_BUFFER_DTS(buffer) = timestamp;
     GST_BUFFER_DURATION(buffer) = frame_duration;
 
-    // ÉèÖÃ¹Ø¼üÖ¡±êÖ¾
     if (frame_count_ % 30 == 0) {
         GST_BUFFER_FLAG_UNSET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
     }
@@ -247,6 +237,9 @@ bool TCPStreamer::send_frame(AVFrame* frame) {
         return false;
     }
 
+    static std::atomic<int> total_frames{0};
+    static std::atomic<int> success_count{0};
+    
     bool can_accept = false;
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
@@ -262,7 +255,6 @@ bool TCPStreamer::send_frame(AVFrame* frame) {
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
 
-        // Èç¹û¶ÓÁÐÂúÁË£¬ÒÆ³ý×îÀÏµÄÖ¡
         if (frame_queue_.size() >= MAX_QUEUE_SIZE) {
             frame_queue_.pop();
         }
@@ -271,6 +263,10 @@ bool TCPStreamer::send_frame(AVFrame* frame) {
     }
 
     queue_cv_.notify_one();
+    
+    success_count++;
+    total_frames++;
+    
     return true;
 }
 
@@ -334,7 +330,7 @@ void TCPStreamer::stop() {
     }
 }
 
-// »Øµ÷º¯Êý
+
 void TCPStreamer::need_data_cb(GstElement* appsrc, guint unused, gpointer user_data) {
     TCPStreamer* streamer = static_cast<TCPStreamer*>(user_data);
     streamer->need_data_ = true;
