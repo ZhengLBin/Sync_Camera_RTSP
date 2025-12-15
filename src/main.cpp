@@ -6,6 +6,8 @@
 #include <csignal>
 #include <vector>
 #include <memory>
+#include <future>
+#include <thread>
 
 std::atomic<bool> g_should_exit{ false };
 
@@ -29,9 +31,9 @@ std::unique_ptr<MultiCameraCapture> create_camera_capture(const CameraDetectionR
         config.target_fps = detection.expected_fps;
 
         if (detection.mode == "dual") {
-            config.max_queue_size = 15;      // 采集队列
-            config.max_sync_queue_size = 10; // 同步队列最多10帧(约330ms)
-            config.sync_threshold_us = 500000;
+            config.max_queue_size = 3;       // 采集队列3帧（保留足够同步空间）
+            config.max_sync_queue_size = 2;  // 同步队列2帧（约66ms缓冲）
+            config.sync_threshold_us = 500000; // 同步容差500ms（足够两个摄像头对齐）
         }
         else if (detection.mode == "triple") {
             config.max_queue_size = 35;
@@ -137,36 +139,60 @@ int main() {
             if (cameras_running && camera_capture) {
                 auto current_time = std::chrono::steady_clock::now();
                 
-                // 只在需要下一帧时才获取(按30fps节奏)
-                if (current_time - last_output_time < frame_interval) {
-                    std::this_thread::sleep_for(std::chrono::milliseconds(1));
-                    continue;
+                get_frame_attempts++;
+                
+                // 🎯 激进丢帧策略：清空所有旧帧，只保留最新的
+                // 不按帧率限制，而是尽可能获取最新帧
+                size_t queue_size = camera_capture->get_sync_queue_size();
+                if (queue_size > 0) {
+                    // 如果队列有多于1个，说明积压了，清空所有旧的
+                    while (camera_capture->get_sync_queue_size() > 1) {
+                        auto old_frames = camera_capture->get_sync_yuv420p_frames();
+                        for (auto* frame : old_frames) {
+                            camera_capture->release_frame(&frame);
+                        }
+                    }
                 }
                 
-                get_frame_attempts++;
                 auto frames = camera_capture->get_sync_yuv420p_frames();
                 size_t expected = camera_capture->get_camera_count();
 
                 if (frames.size() == expected) {
-                    // 设置PTS
+                    // 统一设置PTS（使用同一个时间基准）
+                    int64_t unified_pts = static_cast<int64_t>(frame_count);
                     for (size_t i = 0; i < frames.size(); ++i) {
-                        frames[i]->pts = static_cast<int64_t>(frame_count);
+                        frames[i]->pts = unified_pts;
                     }
 
-                    // 发送到流传输器
+                    // 🎯 直接同步发送（send_frame内部有队列，不会长时间阻塞）
                     for (size_t i = 0; i < frames.size() && i < streamers.size(); ++i) {
-                        bool sent = streamers[i]->send_frame(frames[i]);
-                        if (sent) successful_sends++;
+                        streamers[i]->send_frame(frames[i]);
                     }
 
                     frame_count++;
-                    if (frame_count % 300 == 1) {
-                        std::cout << "[Streaming] " << frame_count << " synced frames transmitted" << std::endl;
+                    
+                    // 🔍 详细调试信息：每30帧输出一次完整的队列状态
+                    if (frame_count % 30 == 0) {
+                        auto now_time = std::chrono::steady_clock::now();
+                        auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now_time - start_time).count();
+                        double actual_fps = frame_count * 1000.0 / elapsed;
+                        
+                        std::cout << "\n=== [DEBUG] Frame " << frame_count 
+                                  << " | Elapsed: " << elapsed << "ms"
+                                  << " | Actual FPS: " << actual_fps << " ===" << std::endl;
+                        std::cout << "SyncQueue size: " << camera_capture->get_sync_queue_size() << std::endl;
+                        
+                        for (size_t i = 0; i < streamers.size(); ++i) {
+                            std::cout << "Streamer[" << i << "] port=" << streamers[i]->get_port()
+                                      << " dropped=" << streamers[i]->get_dropped_count() << std::endl;
+                        }
+                        std::cout << "================================================\n" << std::endl;
                     }
                     
                     last_output_time = current_time;
 
-                    // 释放帧
+                    // 🎯 不在这里释放帧，因为异步发送还在使用
+                    // send_frame内部会复制数据，所以可以立即释放
                     for (auto* frame : frames) {
                         camera_capture->release_frame(&frame);
                     }

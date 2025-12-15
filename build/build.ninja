@@ -95,7 +95,7 @@ build sync_camera.exe: CXX_EXECUTABLE_LINKER__sync_camera_Debug CMakeFiles\sync_
   LINK_LIBRARIES = F:\ffmpeg-7.0.2-full_build-shared\lib\avcodec.lib  F:\ffmpeg-7.0.2-full_build-shared\lib\avformat.lib  F:\ffmpeg-7.0.2-full_build-shared\lib\avutil.lib  F:\ffmpeg-7.0.2-full_build-shared\lib\swscale.lib  F:\ffmpeg-7.0.2-full_build-shared\lib\avdevice.lib  gstreamer-1.0.lib  gstapp-1.0.lib  gstvideo-1.0.lib  gstrtspserver-1.0.lib  gobject-2.0.lib  glib-2.0.lib  Secur32.lib  Bcrypt.lib  ws2_32.lib  ole32.lib  user32.lib  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib
   LINK_PATH = -LIBPATH:F:\ffmpeg-7.0.2-full_build-shared\lib   -LIBPATH:C:\PROGRA~1\GSTREA~1\1.0\MSVC_X~1\lib
   OBJECT_DIR = CMakeFiles\sync_camera.dir
-  POST_BUILD = CMakeFiles\sync_camera.dir\post-build.bat de82f9e69325a954
+  POST_BUILD = CMakeFiles\sync_camera.dir\post-build.bat 937258605283514d
   PRE_LINK = cd .
   TARGET_COMPILE_PDB = CMakeFiles\sync_camera.dir\
   TARGET_FILE = sync_camera.exe

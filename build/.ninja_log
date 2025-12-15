@@ -1,10 +1,8 @@
 # ninja log v6
-43	2133	7870415543675253	CMakeFiles/sync_camera.dir/src/multi_camera_sync.cpp.obj	d83a16127da28603
-45	1349	7870415543695235	CMakeFiles/sync_camera.dir/src/tcp_streamer.cpp.obj	d0b3c26ed7d551a4
-36	2014	7870415543604209	CMakeFiles/sync_camera.dir/src/main.cpp.obj	fb0cbba6129e4cbb
-2133	3435	7870415564575149	sync_camera.exe	818a6dd1b8d6ee5c
+32	2417	7874773495331159	CMakeFiles/sync_camera.dir/src/multi_camera_sync.cpp.obj	d83a16127da28603
+34	1267	7874834351355493	CMakeFiles/sync_camera.dir/src/tcp_streamer.cpp.obj	d0b3c26ed7d551a4
+29	2695	7874773495291167	CMakeFiles/sync_camera.dir/src/main.cpp.obj	fb0cbba6129e4cbb
+1267	11876	7874834363699889	sync_camera.exe	b4877483d4cefaae
 34	961	7870348336872787	CMakeFiles/sync_camera.dir/src/camera_input_source.cpp.obj	91cc02ccb649bcc
-293	5353	7870588328084310	CMakeFiles/sync_camera.dir/src/tcp_streamer.cpp.obj	d0b3c26ed7d551a4
-35	5357	7870588325515126	CMakeFiles/sync_camera.dir/src/main.cpp.obj	fb0cbba6129e4cbb
-290	5382	7870588328064283	CMakeFiles/sync_camera.dir/src/multi_camera_sync.cpp.obj	d83a16127da28603
-5383	14955	7870588378985413	sync_camera.exe	818a6dd1b8d6ee5c
+46	1306	7874835470397567	CMakeFiles/sync_camera.dir/src/tcp_streamer.cpp.obj	d0b3c26ed7d551a4
+1307	11848	7874835482998131	sync_camera.exe	b4877483d4cefaae

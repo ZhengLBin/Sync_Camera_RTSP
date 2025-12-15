@@ -106,21 +106,24 @@ int TCPStreamer::allocate_port() {
 bool TCPStreamer::create_pipeline() {
     std::ostringstream pipeline_str;
 
-    // 极低延迟配置: 减少所有缓冲
+    // 🎯 直接UDP H264流（MPEGTS封装） - 不会累积缓冲区
     pipeline_str << "appsrc name=mysrc "
         << "caps=\"video/x-raw,format=I420,width=" << width_
         << ",height=" << height_ << ",framerate=" << fps_ << "/1\" "
-        << "is-live=true do-timestamp=true block=false max-buffers=2 ! "
-        << "x264enc tune=zerolatency speed-preset=superfast bitrate=3000 "
-        << "key-int-max=30 bframes=0 byte-stream=true threads=4 ! "
+        << "is-live=true do-timestamp=true block=false max-buffers=1 ! "
+        << "queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! "
+        << "x264enc tune=zerolatency speed-preset=ultrafast bitrate=4000 "
+        << "key-int-max=30 bframes=0 byte-stream=true threads=2 "
+        << "sliced-threads=true rc-lookahead=0 sync-lookahead=0 ! "
+        << "queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! "
         << "h264parse config-interval=-1 ! "
         << "video/x-h264,stream-format=byte-stream,alignment=au ! "
-        << "queue max-size-buffers=2 max-size-time=0 max-size-bytes=0 ! "
-        << "tcpserversink host=0.0.0.0 port=" << port_ << " sync=false";
+        << "queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! "
+        << "mpegtsmux alignment=7 ! "
+        << "udpsink host=127.0.0.1 port=" << port_ << " sync=false";
 
     GError* error = nullptr;
     pipeline_ = gst_parse_launch(pipeline_str.str().c_str(), &error);
-
     if (!pipeline_ || error) {
         if (error) {
             std::cerr << "Pipeline creation failed: " << error->message << std::endl;
@@ -149,8 +152,8 @@ bool TCPStreamer::create_pipeline() {
         "is-live", TRUE,
         "do-timestamp", TRUE,
         "format", GST_FORMAT_TIME,
-        "max-buffers", 3,
-        "block", TRUE,
+        "max-buffers", 1,  // 🎯 减少到1个缓冲
+        "block", FALSE,  // 🎯 非阻塞模式，避免等待
         "emit-signals", TRUE,
         nullptr);
 
@@ -203,12 +206,20 @@ bool TCPStreamer::push_frame_to_appsrc() {
     }
 
     GstClockTime frame_duration = gst_util_uint64_scale(GST_SECOND, 1, fps_);
-    GstClockTime timestamp = gst_util_uint64_scale(frame_count_, GST_SECOND, fps_);
+    // 🎯 使用 frame_buffer 的 pts（来自 main.cpp 的统一时间戳）
+    GstClockTime timestamp = gst_util_uint64_scale(frame_buffer->pts, GST_SECOND, fps_);
 
     GST_BUFFER_PTS(buffer) = timestamp;
     GST_BUFFER_DTS(buffer) = timestamp;
-    GST_BUFFER_DURATION(buffer) = frame_duration;
-
+    GST_BUFFER_DURATION(buffer) = frame_duration;    
+    // 🔍 调试：每60帧输出一次时间戳信息
+    if (frame_count_ % 60 == 0) {
+        std::cout << "[" << name_ << ":" << port_ << "] "
+                  << "Frame " << frame_count_ 
+                  << ", PTS=" << frame_buffer->pts
+                  << ", Queue=" << frame_queue_.size()
+                  << std::endl;
+    }
     if (frame_count_ % 30 == 0) {
         GST_BUFFER_FLAG_UNSET(buffer, GST_BUFFER_FLAG_DELTA_UNIT);
     }
@@ -237,26 +248,19 @@ bool TCPStreamer::send_frame(AVFrame* frame) {
         return false;
     }
 
-    static std::atomic<int> total_frames{0};
-    static std::atomic<int> success_count{0};
-    
-    bool can_accept = false;
-    {
-        std::lock_guard<std::mutex> lock(queue_mutex_);
-        if (need_data_.load() && frame_queue_.size() < MAX_QUEUE_SIZE) {
-            can_accept = true;
-        }
-    }
-
-    if (!can_accept) return false;
-
     auto frame_buffer = std::make_shared<ShmFrameBuffer>(frame);
 
     {
         std::lock_guard<std::mutex> lock(queue_mutex_);
 
+        // 🎯 激进丢帧：队列满时清空，只保留最新帧
+        // 防止延迟累积
         if (frame_queue_.size() >= MAX_QUEUE_SIZE) {
-            frame_queue_.pop();
+            // 清空整个队列
+            while (!frame_queue_.empty()) {
+                frame_queue_.pop();
+                dropped_frame_count_++;
+            }
         }
 
         frame_queue_.push(frame_buffer);
@@ -264,13 +268,11 @@ bool TCPStreamer::send_frame(AVFrame* frame) {
 
     queue_cv_.notify_one();
     
-    success_count++;
-    total_frames++;
-    
     return true;
 }
 
 void TCPStreamer::push_frame_loop() {
+    size_t push_count = 0;
     while (running_.load()) {
         if (appsrc_ && need_data_.load()) {
             size_t queue_size = 0;
@@ -281,6 +283,16 @@ void TCPStreamer::push_frame_loop() {
 
             if (queue_size > 0) {
                 push_frame_to_appsrc();
+                push_count++;
+                
+                // 🔍 每30帧输出GStreamer处理状态
+                if (push_count % 30 == 0) {
+                    std::cout << "[GStreamer:" << name_ << ":" << port_ << "] "
+                              << "Pushed=" << push_count 
+                              << " | Queue=" << queue_size
+                              << " | need_data=" << need_data_.load() << std::endl;
+                }
+                
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
             }
             else {

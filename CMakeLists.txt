@@ -105,73 +105,39 @@ foreach(_dll IN LISTS FFMPEG_DLLS)
     )
 endforeach()
 
-# --- GStreamer 核心 DLL ---
-message(STATUS "Copying essential GStreamer DLLs...")
-set(GSTREAMER_ESSENTIAL_DLLS
-    "gstreamer-1.0-0.dll"
-    "glib-2.0-0.dll"
-    "gobject-2.0-0.dll"
-    "gio-2.0-0.dll"
-    "gmodule-2.0-0.dll"
-    "gthread-2.0-0.dll"
-    "gstapp-1.0-0.dll"
-    "gstvideo-1.0-0.dll"
-    "gstbase-1.0-0.dll"
-    "gstnet-1.0-0.dll"
-    "gstudp-1.0-0.dll"
-    "gstrtp-1.0-0.dll"
-    "gstrtpmanager-1.0-0.dll"
-    "gstrtspserver-1.0-0.dll"
-    "intl-8.dll"
-    "pcre2-8-0.dll"
-    "ffi-8.dll"
-    "iconv-2.dll"
-    "charset-1.dll"
-    "z-1.dll"
-    "orc-0.4-0.dll"
-    "winpthread-1.dll"
-)
+# --- GStreamer 所有 DLL（全量复制策略）---
+message(STATUS "Copying ALL GStreamer DLLs from bin directory...")
 
-foreach(_dll_name IN LISTS GSTREAMER_ESSENTIAL_DLLS)
-    set(_dll_path "${GSTREAMER_ROOT}/bin/${_dll_name}")
-    if(EXISTS "${_dll_path}")
-        add_custom_command(TARGET sync_camera POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dll_path}"
-            "$<TARGET_FILE_DIR:sync_camera>/${_dll_name}"
-            COMMENT "Copying GStreamer DLL: ${_dll_name}"
-        )
-    endif()
+# 获取 GStreamer bin 目录下的所有 DLL
+file(GLOB GSTREAMER_ALL_DLLS "${GSTREAMER_ROOT}/bin/*.dll")
+
+foreach(_dll_path IN LISTS GSTREAMER_ALL_DLLS)
+    get_filename_component(_dll_name "${_dll_path}" NAME)
+    add_custom_command(TARGET sync_camera POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_dll_path}"
+        "$<TARGET_FILE_DIR:sync_camera>/${_dll_name}"
+        COMMENT "Copying GStreamer DLL: ${_dll_name}"
+    )
 endforeach()
 
-# --- GStreamer 插件 ---
+message(STATUS "Will copy ${CMAKE_MATCH_COUNT} GStreamer DLLs")
+
+# --- GStreamer 插件（全量复制）---
 add_custom_command(TARGET sync_camera POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory "$<TARGET_FILE_DIR:sync_camera>/gstreamer-1.0"
 )
 
-set(REQUIRED_PLUGINS
-    gstcoreelements.dll
-    gstapp.dll
-    gsttcp.dll
-    gstvideoconvertscale.dll
-    gstvideoparsersbad.dll
-    gstx264.dll
-    gstrtp.dll
-    gstrtpmanager.dll
-    gstplayback.dll
-    gstudp.dll
-    gsttypefindfunctions.dll
-)
+message(STATUS "Copying ALL GStreamer plugins...")
+file(GLOB GSTREAMER_ALL_PLUGINS "${GSTREAMER_ROOT}/lib/gstreamer-1.0/*.dll")
 
-foreach(_plugin IN LISTS REQUIRED_PLUGINS)
-    set(_plugin_path "${GSTREAMER_ROOT}/lib/gstreamer-1.0/${_plugin}")
-    if(EXISTS "${_plugin_path}")
-        add_custom_command(TARGET sync_camera POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${_plugin_path}"
-            "$<TARGET_FILE_DIR:sync_camera>/gstreamer-1.0/${_plugin}"
-            COMMENT "Copying plugin: ${_plugin}"
-        )
-    endif()
+foreach(_plugin_path IN LISTS GSTREAMER_ALL_PLUGINS)
+    get_filename_component(_plugin_name "${_plugin_path}" NAME)
+    add_custom_command(TARGET sync_camera POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${_plugin_path}"
+        "$<TARGET_FILE_DIR:sync_camera>/gstreamer-1.0/${_plugin_name}"
+        COMMENT "Copying plugin: ${_plugin_name}"
+    )
 endforeach()
 
 # ======================================
@@ -180,12 +146,39 @@ endforeach()
 set(RUN_SCRIPT_PATH "${CMAKE_CURRENT_BINARY_DIR}/run_sync_camera.bat")
 
 file(WRITE "${RUN_SCRIPT_PATH}" "@echo off\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "chcp 65001 >nul\n")
 file(APPEND "${RUN_SCRIPT_PATH}" "pushd %~dp0\n\n")
-file(APPEND "${RUN_SCRIPT_PATH}" "set \"GST_PLUGIN_PATH=%cd%\\gstreamer-1.0\"\n")
-file(APPEND "${RUN_SCRIPT_PATH}" "set \"PATH=%PATH%;%cd%\"\n\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo ========================================\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo Sync Camera Launcher (Portable Mode)\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo ========================================\n")
 file(APPEND "${RUN_SCRIPT_PATH}" "echo 当前目录：%cd%\n")
-file(APPEND "${RUN_SCRIPT_PATH}" "echo 尝试启动 sync_camera.exe...\n")
-file(APPEND "${RUN_SCRIPT_PATH}" "sync_camera.exe\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo.\n\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "REM 设置 GStreamer 插件路径（本地优先）\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "set \"GST_PLUGIN_PATH=%cd%\\gstreamer-1.0\"\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "set \"GST_PLUGIN_SYSTEM_PATH=%cd%\\gstreamer-1.0\"\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "set \"GST_DEBUG=2\"\n\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "REM 将当前目录添加到 PATH（确保所有 DLL 可被找到）\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "set \"PATH=%cd%;%PATH%\"\n\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo [检查] 关键文件...\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "if not exist sync_camera.exe (\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "    echo [错误] 未找到 sync_camera.exe\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "    pause\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "    exit /b 1\n")
+file(APPEND "${RUN_SCRIPT_PATH}" ")\n\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "if not exist x264-164.dll (\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "    echo [警告] 未找到 x264-164.dll，可能导致 x264enc 插件无法加载\n")
+file(APPEND "${RUN_SCRIPT_PATH}" ")\n\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "if not exist gstreamer-1.0\\gstx264.dll (\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "    echo [警告] 未找到 gstreamer-1.0\\gstx264.dll\n")
+file(APPEND "${RUN_SCRIPT_PATH}" ")\n\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo [启动] sync_camera.exe\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo ========================================\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo.\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "sync_camera.exe\n\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo.\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo ========================================\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo 程序已退出\n")
+file(APPEND "${RUN_SCRIPT_PATH}" "echo ========================================\n")
 file(APPEND "${RUN_SCRIPT_PATH}" "pause\n")
 file(APPEND "${RUN_SCRIPT_PATH}" "popd\n")
 

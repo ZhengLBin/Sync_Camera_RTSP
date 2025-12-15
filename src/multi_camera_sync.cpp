@@ -55,7 +55,7 @@ bool MultiCameraCapture::init_camera(int index, const std::string& device_path) 
 
     av_dict_set(&options, "video_size", "640x480", 0);
     av_dict_set(&options, "framerate", "30", 0);
-    av_dict_set(&options, "rtbufsize", "100M", 0);
+    av_dict_set(&options, "rtbufsize", "100K", 0);  // 最小化缓冲，只保留几帧
     av_dict_set(&options, "pixel_format", "yuyv422", 0);
 
     int ret = avformat_open_input(&cam.fmt_ctx, device_path.c_str(), input_format, &options);
@@ -312,8 +312,11 @@ void MultiCameraCapture::capture_thread(int camera_index) {
                             frame_captured_count++;
                         }
 
-                        if (frame_captured_count % 300 == 1) {
-                            std::cout << "[Camera " << camera_index << "] " << frame_captured_count << " frames" << std::endl;
+                        // 🔍 每30帧输出采集队列大小
+                        if (frame_captured_count % 30 == 0) {
+                            std::lock_guard<std::mutex> lock(queue_mutex_);
+                            std::cout << "[Camera " << camera_index << "] Captured=" << frame_captured_count 
+                                      << " | Queue size=" << frame_queues_[camera_index].size() << std::endl;
                         }
                     } else {
                         if (frame_captured_count % 100 == 1) {
