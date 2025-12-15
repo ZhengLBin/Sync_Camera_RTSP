@@ -98,39 +98,22 @@ class Camera:
             port = self.start_port + i
             camera_name = self.camera_names[i]
 
-            try:
-                test_sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                test_sock.settimeout(1.5)  # 1.5秒超时
-                result = test_sock.connect_ex((self.host, port))
-                test_sock.close()
-
-                if result == 0:
-                    detected_ports.append(port)
-                    camera_status.append({
-                        'name': camera_name,
-                        'port': port,
-                        'connected': True
-                    })
-                    print(f"[SERVER_DETECT] ✓ {camera_name.upper()} camera found on port {port}")
-                else:
-                    camera_status.append({
-                        'name': camera_name,
-                        'port': port,
-                        'connected': False
-                    })
-                    print(f"[SERVER_DETECT] ✗ {camera_name.upper()} camera not found on port {port}")
-                    # 如果端口不连续，停止检测
-                    if 0 < i == len(detected_ports):
-                        break
-
-            except Exception as e:
+            # UDP模式：无法通过TCP连接测试检测，假设前2个端口存在
+            # 实际检测需要尝试接收数据，这会在open()时完成
+            if i < 2:  # 假设至少有dual模式(前2个摄像头)
+                detected_ports.append(port)
                 camera_status.append({
                     'name': camera_name,
                     'port': port,
-                    'connected': False,
-                    'error': str(e)
+                    'connected': True  # UDP无法预先检测，标记为True
                 })
-                print(f"[SERVER_DETECT] ✗ Error testing {camera_name} on port {port}: {e}")
+                print(f"[SERVER_DETECT] ⚠ {camera_name.upper()} camera assumed on port {port} (UDP mode)")
+            else:
+                camera_status.append({
+                    'name': camera_name,
+                    'port': port,
+                    'connected': False
+                })
                 break
 
         # 分析检测结果
@@ -291,19 +274,21 @@ class Camera:
         return True
 
     def _camera_capture_worker(self, port: int, camera_name: str):
-        """摄像头数据接收线程 - 使用 OpenCV 解码 H.264 流"""
+        """摄像头数据接收线程 - 使用 OpenCV 解码 UDP MPEGTS 流"""
         print(f"[{camera_name.upper()}] Starting capture from port {port}")
         
-        # 使用 OpenCV 的 VideoCapture 连接到 TCP 流
-        # 格式: tcp://host:port
-        stream_url = f"tcp://{self.host}:{port}"
+        # 使用 OpenCV 的 VideoCapture 连接到 UDP MPEGTS 流
+        # 格式: udp://host:port
+        stream_url = f"udp://{self.host}:{port}"
         
         try:
-            # 创建 VideoCapture 对象
+            # 创建 VideoCapture 对象，使用 FFMPEG 后端
             cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
             
-            # 设置缓冲区大小为最小，减少延迟
+            # 设置缓冲区大小为最小，减少延迟（UDP模式下更重要）
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            # 设置额外的低延迟选项
+            cap.set(cv2.CAP_PROP_FPS, 30)
             
             if not cap.isOpened():
                 print(f"[{camera_name.upper()}] ERROR: Failed to open stream {stream_url}")
