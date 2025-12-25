@@ -1,5 +1,6 @@
 ﻿#include "../includes/multi_camera_sync.h"
 #include "../includes/tcp_streamer.h"
+#include "../includes/config_manager.h"
 #include "../includes/camera_input_source.h"
 #include <iostream>
 #include <chrono>
@@ -69,15 +70,17 @@ std::vector<std::unique_ptr<TCPStreamer>> create_streamers(const CameraDetection
     int width = 640;
     int height = 480;
 
-    std::vector<std::string> names = { "front", "back", "left", "right" };
-    const int base_port = 5010;
+    // 从配置文件获取流配置
+    auto& config_mgr = ConfigManager::instance();
+    const auto& configs = config_mgr.get_configs();
 
-    for (size_t i = 0; i < camera_count; ++i) {
-        int port = base_port + static_cast<int>(i);
-        auto streamer = std::make_unique<TCPStreamer>(names[i], port);
+    for (size_t i = 0; i < camera_count && i < configs.size(); ++i) {
+        const auto& config = configs[i];
+        auto streamer = std::make_unique<TCPStreamer>(config.name, config.host, config.port);
 
         if (!streamer->init(width, height, detection.expected_fps)) {
-            std::cerr << "Failed to initialize streamer " << i << " on port " << port << std::endl;
+            std::cerr << "Failed to initialize streamer " << i << " (" << config.name 
+                      << ") on " << config.host << ":" << config.port << std::endl;
             return {};
         }
 
@@ -87,7 +90,22 @@ std::vector<std::unique_ptr<TCPStreamer>> create_streamers(const CameraDetection
     return streamers;
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    // 加载配置文件
+    std::string config_file = "streamer_config.txt";
+    if (argc > 1) {
+        config_file = argv[1];
+    }
+    
+    auto& config_mgr = ConfigManager::instance();
+    if (!config_mgr.load_config(config_file)) {
+        std::cerr << "Failed to load config from " << config_file << std::endl;
+        std::cout << "Generating default config..." << std::endl;
+        ConfigManager::generate_default_config(config_file);
+        std::cerr << "Please update " << config_file << " and run again" << std::endl;
+        return -1;
+    }
+
     std::signal(SIGINT, signal_handler);
     std::signal(SIGTERM, signal_handler);
 

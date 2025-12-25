@@ -7,7 +7,7 @@
 				{
 					"build" : ".",
 					"hasInstallRule" : true,
-					"jsonFile" : "directory-.-Debug-ea668b5842ae9c8468a1.json",
+					"jsonFile" : "directory-.-Debug-e19a8f48a1c5be8d7f1e.json",
 					"minimumCMakeVersion" : 
 					{
 						"string" : "3.8"
@@ -40,7 +40,7 @@
 				{
 					"directoryIndex" : 0,
 					"id" : "sync_camera::@6890427a1f51a3e7e1df",
-					"jsonFile" : "target-sync_camera-Debug-66b7536a90f9cd661372.json",
+					"jsonFile" : "target-sync_camera-Debug-40a07c056fb855f8ef22.json",
 					"name" : "sync_camera",
 					"projectIndex" : 0
 				}

@@ -72,15 +72,12 @@ class Camera:
         """
         current_time = time.time()
 
-        # 检查缓存
-        if (not force_refresh and
-                self._server_camera_info and
-                current_time - self._last_detection_time < self._detection_cache_duration):
+        # 检查缓存（只在首次或强制刷新时检测，避免循环检测和日志刷屏）
+        if self._server_camera_info is not None and not force_refresh:
             return self._server_camera_info.copy()
 
         print("[SERVER_DETECT] Detecting server camera configuration...")
 
-        # 检测服务端状态
         server_info = {
             'status': 'offline',
             'mode': 'unknown',
@@ -90,25 +87,49 @@ class Camera:
             'detection_time': current_time
         }
 
-        # 测试最多4个端口
         detected_ports = []
         camera_status = []
 
+        # 用socket检测端口是否有数据包（不再用OpenCV解码）
         for i in range(len(self.camera_names)):
             port = self.start_port + i
             camera_name = self.camera_names[i]
-
-            # UDP模式：无法通过TCP连接测试检测，假设前2个端口存在
-            # 实际检测需要尝试接收数据，这会在open()时完成
-            if i < 2:  # 假设至少有dual模式(前2个摄像头)
-                detected_ports.append(port)
-                camera_status.append({
-                    'name': camera_name,
-                    'port': port,
-                    'connected': True  # UDP无法预先检测，标记为True
-                })
-                print(f"[SERVER_DETECT] ⚠ {camera_name.upper()} camera assumed on port {port} (UDP mode)")
-            else:
+            print(f"[SERVER_DETECT] Testing {camera_name.upper()} on port {port}...")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.settimeout(1.5)
+            try:
+                sock.bind(("", port))
+                try:
+                    data, addr = sock.recvfrom(2048)
+                    if data:
+                        detected_ports.append(port)
+                        camera_status.append({
+                            'name': camera_name,
+                            'port': port,
+                            'connected': True
+                        })
+                        print(f"[SERVER_DETECT] ✓ {camera_name.upper()} camera detected on port {port}")
+                    else:
+                        camera_status.append({
+                            'name': camera_name,
+                            'port': port,
+                            'connected': False,
+                            'error': 'No data received'
+                        })
+                        print(f"[SERVER_DETECT] ✗ {camera_name.upper()} no data received on port {port}")
+                        break
+                except socket.timeout:
+                    camera_status.append({
+                        'name': camera_name,
+                        'port': port,
+                        'connected': False,
+                        'error': 'No UDP packet received (timeout)'
+                    })
+                    print(f"[SERVER_DETECT] ✗ {camera_name.upper()} no UDP packet received on port {port}")
+                    break
+                finally:
+                    sock.close()
+            except Exception as e:
                 camera_status.append({
                     'name': camera_name,
                     'port': port,
@@ -116,14 +137,12 @@ class Camera:
                 })
                 break
 
-        # 分析检测结果
         camera_count = len(detected_ports)
         server_info['camera_count'] = camera_count
         server_info['detected_cameras'] = camera_status
 
         if camera_count >= 2:
             server_info['server_running'] = True
-
             if camera_count >= 4:
                 server_info['mode'] = 'quad'
                 server_info['status'] = 'online'
@@ -140,10 +159,8 @@ class Camera:
             else:
                 server_info['status'] = 'offline'
 
-        # 更新缓存
         self._server_camera_info = server_info.copy()
         self._last_detection_time = current_time
-
         return server_info
 
     def get_camera_mapping(self) -> Dict[str, str]:
@@ -275,18 +292,24 @@ class Camera:
 
     def _camera_capture_worker(self, port: int, camera_name: str):
         """摄像头数据接收线程 - 使用 OpenCV 解码 UDP MPEGTS 流"""
+        """摄像头数据接收线程 - 使用 OpenCV 解码 UDP MPEGTS 流"""
         print(f"[{camera_name.upper()}] Starting capture from port {port}")
         
+        # [MODIFIED] 协议变更: TCP -> UDP
         # 使用 OpenCV 的 VideoCapture 连接到 UDP MPEGTS 流
-        # 格式: udp://host:port
-        stream_url = f"udp://{self.host}:{port}"
+        # stream_url = f"udp://{self.host}:{port}"
+        stream_url = f"udp://0.0.0.0:{port}?fifo_size=50000000&overrun_nonfatal=1"
         
         try:
             # 创建 VideoCapture 对象，使用 FFMPEG 后端
+            # 创建 VideoCapture 对象，使用 FFMPEG 后端
             cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
             
+            # [MODIFIED] 优化: 设置低延迟参数
             # 设置缓冲区大小为最小，减少延迟（UDP模式下更重要）
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            # 设置额外的低延迟选项
+            cap.set(cv2.CAP_PROP_FPS, 30)
             # 设置额外的低延迟选项
             cap.set(cv2.CAP_PROP_FPS, 30)
             

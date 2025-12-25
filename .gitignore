@@ -4,6 +4,11 @@
 # Ignore build output
 out/
 
+build.zip
+build/
+*.zip
+*.exe
+
 # CMake generated files
 CMakeFiles/
 CMakeCache.txt

@@ -1,0 +1,10 @@
+# Streamer Configuration
+# Format: name host port
+# Example:
+# front 127.0.0.1 5010
+
+# front 192.168.16.65 5010
+# back 192.168.16.65 5011
+
+front 127.0.0.1 5010
+back 127.0.0.1 5011

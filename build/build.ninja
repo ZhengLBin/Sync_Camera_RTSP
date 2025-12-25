@@ -73,6 +73,14 @@ build CMakeFiles\sync_camera.dir\src\tcp_streamer.cpp.obj: CXX_COMPILER__sync_ca
   TARGET_COMPILE_PDB = CMakeFiles\sync_camera.dir\
   TARGET_PDB = sync_camera.pdb
 
+build CMakeFiles\sync_camera.dir\src\config_manager.cpp.obj: CXX_COMPILER__sync_camera_unscanned_Debug D$:\_DesktopMoveHere\Leji_proj\sync_camera\src\config_manager.cpp || cmake_object_order_depends_target_sync_camera
+  FLAGS = /DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Ob0 /Od /RTC1 -std:c++20 -Zi
+  INCLUDES = -IF:\ffmpeg-7.0.2-full_build-shared\include -I"C:\Program Files\gstreamer\1.0\msvc_x86_64\include\gstreamer-1.0" -I"C:\Program Files\gstreamer\1.0\msvc_x86_64\include\glib-2.0" -I"C:\Program Files\gstreamer\1.0\msvc_x86_64\lib\glib-2.0\include"
+  OBJECT_DIR = CMakeFiles\sync_camera.dir
+  OBJECT_FILE_DIR = CMakeFiles\sync_camera.dir\src
+  TARGET_COMPILE_PDB = CMakeFiles\sync_camera.dir\
+  TARGET_PDB = sync_camera.pdb
+
 build CMakeFiles\sync_camera.dir\src\camera_input_source.cpp.obj: CXX_COMPILER__sync_camera_unscanned_Debug D$:\_DesktopMoveHere\Leji_proj\sync_camera\src\camera_input_source.cpp || cmake_object_order_depends_target_sync_camera
   FLAGS = /DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Ob0 /Od /RTC1 -std:c++20 -Zi
   INCLUDES = -IF:\ffmpeg-7.0.2-full_build-shared\include -I"C:\Program Files\gstreamer\1.0\msvc_x86_64\include\gstreamer-1.0" -I"C:\Program Files\gstreamer\1.0\msvc_x86_64\include\glib-2.0" -I"C:\Program Files\gstreamer\1.0\msvc_x86_64\lib\glib-2.0\include"
@@ -89,7 +97,7 @@ build CMakeFiles\sync_camera.dir\src\camera_input_source.cpp.obj: CXX_COMPILER__
 #############################################
 # Link the executable sync_camera.exe
 
-build sync_camera.exe: CXX_EXECUTABLE_LINKER__sync_camera_Debug CMakeFiles\sync_camera.dir\src\main.cpp.obj CMakeFiles\sync_camera.dir\src\multi_camera_sync.cpp.obj CMakeFiles\sync_camera.dir\src\tcp_streamer.cpp.obj CMakeFiles\sync_camera.dir\src\camera_input_source.cpp.obj | F$:\ffmpeg-7.0.2-full_build-shared\lib\avcodec.lib F$:\ffmpeg-7.0.2-full_build-shared\lib\avformat.lib F$:\ffmpeg-7.0.2-full_build-shared\lib\avutil.lib F$:\ffmpeg-7.0.2-full_build-shared\lib\swscale.lib F$:\ffmpeg-7.0.2-full_build-shared\lib\avdevice.lib
+build sync_camera.exe: CXX_EXECUTABLE_LINKER__sync_camera_Debug CMakeFiles\sync_camera.dir\src\main.cpp.obj CMakeFiles\sync_camera.dir\src\multi_camera_sync.cpp.obj CMakeFiles\sync_camera.dir\src\tcp_streamer.cpp.obj CMakeFiles\sync_camera.dir\src\config_manager.cpp.obj CMakeFiles\sync_camera.dir\src\camera_input_source.cpp.obj | F$:\ffmpeg-7.0.2-full_build-shared\lib\avcodec.lib F$:\ffmpeg-7.0.2-full_build-shared\lib\avformat.lib F$:\ffmpeg-7.0.2-full_build-shared\lib\avutil.lib F$:\ffmpeg-7.0.2-full_build-shared\lib\swscale.lib F$:\ffmpeg-7.0.2-full_build-shared\lib\avdevice.lib
   FLAGS = /DWIN32 /D_WINDOWS /W3 /GR /EHsc /MDd /Ob0 /Od /RTC1 -Zi
   LINK_FLAGS = /machine:x64 /debug /INCREMENTAL /subsystem:console
   LINK_LIBRARIES = F:\ffmpeg-7.0.2-full_build-shared\lib\avcodec.lib  F:\ffmpeg-7.0.2-full_build-shared\lib\avformat.lib  F:\ffmpeg-7.0.2-full_build-shared\lib\avutil.lib  F:\ffmpeg-7.0.2-full_build-shared\lib\swscale.lib  F:\ffmpeg-7.0.2-full_build-shared\lib\avdevice.lib  gstreamer-1.0.lib  gstapp-1.0.lib  gstvideo-1.0.lib  gstrtspserver-1.0.lib  gobject-2.0.lib  glib-2.0.lib  Secur32.lib  Bcrypt.lib  ws2_32.lib  ole32.lib  user32.lib  kernel32.lib user32.lib gdi32.lib winspool.lib shell32.lib ole32.lib oleaut32.lib uuid.lib comdlg32.lib advapi32.lib

@@ -47,25 +47,19 @@ bool initialize_gstreamer() {
 std::atomic<int> TCPStreamer::next_port_{ 5010 };
 std::mutex TCPStreamer::port_allocation_mutex_;
 
-TCPStreamer::TCPStreamer(const std::string& name, int port)
-    : name_(name), width_(0), height_(0), fps_(0),
-    pipeline_(nullptr), appsrc_(nullptr), bus_(nullptr), bus_watch_id_(0),
-    running_(false), initialized_(false), need_data_(true),
-    frame_count_(0) {
-
-    if (port > 0) {
-        port_ = port;
-    }
-    else {
-        port_ = allocate_port();
-    }
+TCPStreamer::TCPStreamer(const std::string& name, const std::string& host, int port)
+    : name_(name), tcp_url_(), host_(host), port_(port),
+      width_(0), height_(0), fps_(0),
+      pipeline_(nullptr), appsrc_(nullptr), bus_(nullptr), bus_watch_id_(0),
+      running_(false), initialized_(false), need_data_(true),
+      frame_count_(0), dropped_frame_count_(0), total_memory_allocated_(0) {
 
     if (!initialize_gstreamer()) {
         std::cerr << "GStreamer initialization failed" << std::endl;
     }
 
     std::ostringstream url;
-    url << "tcp://0.0.0.0:" << port_;
+    url << "udp://" << host_ << ":" << port_;
     tcp_url_ = url.str();
 }
 
@@ -120,7 +114,7 @@ bool TCPStreamer::create_pipeline() {
         << "video/x-h264,stream-format=byte-stream,alignment=au ! "
         << "queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! "
         << "mpegtsmux alignment=7 ! "
-        << "udpsink host=127.0.0.1 port=" << port_ << " sync=false";
+        << "udpsink host=" << host_ << " port=" << port_ << " sync=false";
 
     GError* error = nullptr;
     pipeline_ = gst_parse_launch(pipeline_str.str().c_str(), &error);

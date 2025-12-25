@@ -46,8 +46,10 @@ add_executable(sync_camera
     src/main.cpp
     src/multi_camera_sync.cpp
     src/tcp_streamer.cpp
+    src/config_manager.cpp
     includes/multi_camera_sync.h
     includes/tcp_streamer.h
+    includes/config_manager.h
     src/camera_input_source.cpp
     includes/camera_input_source.h
 )
